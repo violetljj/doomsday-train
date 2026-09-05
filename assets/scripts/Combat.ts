@@ -1,8 +1,8 @@
 export type Phase = 'menu' | 'combat' | 'reward' | 'arrange' | 'upgrade' | 'paused' | 'win' | 'lose';
 export type Form = 'flame' | 'tornado' | 'twin' | 'giant';
 export interface Enemy { id: number; x: number; y: number; hp: number; maxHp: number; speed: number; kind: number; flash: number; }
-export interface Vortex { id: number; x: number; y: number; dx: number; dy: number; life: number; radius: number; tick: number; }
-export interface Effect { type: string; x: number; y: number; size: number; }
+export interface Vortex { id: number; x: number; y: number; dx: number; dy: number; life: number; maxLife: number; age: number; radius: number; tick: number; damage: number; }
+export interface Effect { type: string; x: number; y: number; size: number; dx?: number; dy?: number; enemyKind?: number; }
 
 /** Engine-independent, fixed-step combat. Coordinates match the 720 × 1280 UI. */
 export class Combat {
@@ -15,13 +15,14 @@ export class Combat {
   aim = { x: 220, y: 40 }; fireFlash = 0;
   private nextId = 0; private spawnClock = 0; private fireClock = 0;
   private accumulator = 0; private rewarded = false; private upgraded = false;
+  private nextWave = 0;
 
   start(seed = 137) {
     this.phase = 'combat'; this.form = 'flame'; this.time = 0; this.hp = 100; this.kills = 0;
     this.seed = seed >>> 0 || 137; this.initialSeed = this.seed;
     this.enemies = []; this.vortices = []; this.effects = []; this.events = [];
     this.nextId = 0; this.spawnClock = 0; this.fireClock = 0; this.accumulator = 0;
-    this.rewarded = false; this.upgraded = false;
+    this.rewarded = false; this.upgraded = false; this.nextWave = 0;
     this.events.push({ type: 'run_start', time: 0 });
     for (let i = 0; i < 5; i++) this.spawn(true);
   }
@@ -29,14 +30,28 @@ export class Combat {
     let s = this.seed; s ^= s << 13; s ^= s >>> 17; s ^= s << 5;
     this.seed = s >>> 0; return this.seed / 4294967296;
   }
-  private spawn(near = false) {
+  private spawn(near = false, cluster?: { side: number; y: number }) {
     if (this.enemies.length >= 100) return;
-    const side = this.random() > .5 ? 1 : -1;
+    const side = cluster ? cluster.side : this.random() > .5 ? 1 : -1;
     const kind = this.time > 28 && this.random() < .18 ? 2 : this.time > 15 && this.random() < .28 ? 1 : 0;
     const hp = kind === 2 ? 72 : kind === 1 ? 17 : 24;
     this.enemies.push({ id: this.nextId++, x: side * (near ? 190 + this.random() * 95 : 365 + this.random() * 30),
-      y: -220 + this.random() * 510, hp, maxHp: hp, kind, speed: kind === 1 ? 65 : kind === 2 ? 28 : 36,
+      y: cluster ? cluster.y + (this.random() - .5) * 100 : -220 + this.random() * 510, hp, maxHp: hp, kind, speed: kind === 1 ? 65 : kind === 2 ? 28 : 36,
       flash: 0 });
+  }
+  private wave() {
+    const times = [5, 21, 45, 50], counts = [6, 8, 10, 16];
+    if (this.nextWave >= times.length || this.time < times[this.nextWave] - .00001) return;
+    const index = this.nextWave++;
+    this.events.push({ type: 'wave', time: this.time, value: String(times[index]) });
+    this.effects.push({ type: 'wave', x: 0, y: 260, size: times[index] });
+    const cluster = { side: this.random() > .5 ? 1 : -1, y: -120 + this.random() * 300 };
+    for (let i = 0; i < counts[index]; i++) this.spawn(index === 0, cluster);
+  }
+  private spawnRate() {
+    const t = this.time;
+    return t < 5 ? 1.25 : t < 8 ? 2.6 : t < 11 ? .8 : t < 19 ? 4.2 : t < 21 ? 5.8 :
+      t < 25 ? 7 : t < 29 ? 1.6 : t < 40 ? 6.2 : t < 45 ? 7.5 : t < 50 ? 10 : t < 57 ? 12 : 4;
   }
   advance(delta: number) {
     if (this.phase !== 'combat') return;
@@ -48,8 +63,8 @@ export class Combat {
   }
   private step(dt: number) {
     this.time += dt; this.fireFlash = Math.max(0, this.fireFlash - dt);
-    const rate = this.time < 8 ? 1.8 : this.time < 25 ? 4.2 : this.time < 50 ? 7 : 12;
-    this.spawnClock += dt * rate;
+    this.wave();
+    this.spawnClock += dt * this.spawnRate();
     while (this.spawnClock >= 1) { this.spawnClock--; this.spawn(); }
     for (const e of this.enemies) {
       e.flash = Math.max(0, e.flash - dt);
@@ -71,7 +86,7 @@ export class Combat {
         for (const e of candidates) {
           const a = Math.atan2(e.y - 40, e.x);
           const diff = Math.atan2(Math.sin(a - angle), Math.cos(a - angle));
-          if (Math.hypot(e.x, e.y-40) < 265 && Math.abs(diff) < .48) this.hurt(e, 5);
+          if (Math.hypot(e.x, e.y-40) < 265 && Math.abs(diff) < .48) this.hurt(e, 5, e.x, e.y - 40);
         }
       } else {
         this.fireClock = this.form === 'twin' ? .48 : this.form === 'giant' ? .68 : .65;
@@ -82,17 +97,19 @@ export class Combat {
       }
     }
     for (const v of this.vortices) {
-      v.life -= dt; v.x += v.dx * dt; v.y += v.dy * dt; v.tick -= dt;
+      v.life -= dt; v.age += dt; v.x += v.dx * dt; v.y += v.dy * dt; v.tick -= dt;
+    }
+    this.vortices = this.vortices.filter(v => v.life > 0);
+    this.pullEnemies(dt);
+    for (const v of this.vortices) {
       if (v.tick <= 0) {
         v.tick += .15;
         for (const e of this.enemies) {
           if (e.hp <= 0 || Math.hypot(e.x-v.x, e.y-v.y) > v.radius + 12) continue;
-          this.hurt(e, this.form === 'giant' ? 18 : 13);
-          e.x += v.dx * .014; e.y += v.dy * .014;
+          this.hurt(e, v.damage, e.x - v.x + v.dx * .16, e.y - v.y + v.dy * .16);
         }
       }
     }
-    this.vortices = this.vortices.filter(v => v.life > 0);
     this.enemies = this.enemies.filter(e => e.hp > 0);
     if (this.hp <= 0) return this.finish('lose');
     if (this.time >= 60 - .00001) return this.finish('win');
@@ -102,15 +119,41 @@ export class Combat {
       this.upgraded = true; this.phase = 'upgrade'; this.events.push({ type: 'upgrade_offer', time: this.time });
     }
   }
-  private hurt(e: Enemy, amount: number) {
+  private pullEnemies(dt: number) {
+    for (const e of this.enemies) {
+      if (e.hp <= 0) continue;
+      let nearest: Vortex | undefined, distance = Infinity;
+      for (const v of this.vortices) {
+        const d = Math.hypot(v.x - e.x, v.y - e.y);
+        if (d < v.radius + 48 && d < distance) { nearest = v; distance = d; }
+      }
+      if (!nearest || distance < .001) continue;
+      const nx = (nearest.x - e.x) / distance, ny = (nearest.y - e.y) / distance;
+      const strength = 1 - distance / (nearest.radius + 48);
+      // Ease the inward force at the eye, and keep a visible orbit around it.
+      const inward = Math.min(distance * 5, 45 + 125 * strength);
+      const tangent = (65 + 100 * strength) * (nearest.id % 2 ? -1 : 1);
+      let vx = nx * inward - ny * tangent, vy = ny * inward + nx * tangent;
+      const cap = Math.min(1, 190 / Math.hypot(vx, vy));
+      vx *= cap; vy *= cap;
+      e.x += vx * dt; e.y += vy * dt;
+    }
+  }
+  private hurt(e: Enemy, amount: number, dx: number, dy: number) {
     if (e.hp <= 0) return;
+    const length = Math.hypot(dx, dy);
+    dx = length > .001 ? dx / length : 1; dy = length > .001 ? dy / length : 0;
     e.hp -= amount; e.flash = .09;
-    if (e.hp <= 0) { this.kills++; this.effects.push({ type: 'kill', x: e.x, y: e.y, size: e.kind === 2 ? 26 : 16 }); }
+    this.effects.push({ type: 'hit', x: e.x, y: e.y, size: e.kind === 2 ? 7 : 4, dx, dy, enemyKind: e.kind });
+    if (e.hp <= 0) {
+      this.kills++; this.effects.push({ type: 'kill', x: e.x, y: e.y, size: e.kind === 2 ? 26 : 16, dx, dy, enemyKind: e.kind });
+    } else { e.x += dx * 2.4; e.y += dy * 2.4; }
   }
   private vortex(angle: number) {
     const giant = this.form === 'giant';
     this.vortices.push({ id: this.nextId++, x: 0, y: 40, dx: Math.cos(angle) * (giant ? 145 : 210),
-      dy: Math.sin(angle) * (giant ? 145 : 210), life: giant ? 3.1 : 2.35, radius: giant ? 106 : 65, tick: 0 });
+      dy: Math.sin(angle) * (giant ? 145 : 210), life: giant ? 3.1 : 2.35, maxLife: giant ? 3.1 : 2.35,
+      age: 0, radius: giant ? 106 : 65, tick: 0, damage: giant ? 18 : 13 });
   }
   beginArrange() { if (this.phase === 'reward') this.phase = 'arrange'; }
   installFan() {

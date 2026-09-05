@@ -1,20 +1,29 @@
 import { _decorator, Component, Node, Graphics, Color, UITransform, Label, Vec3, EventTouch,
-  resources, SpriteFrame, Sprite, view, ResolutionPolicy, game, Game as EngineGame, Layers, profiler } from 'cc';
-import { Combat, Phase } from './Combat';
+  resources, SpriteFrame, Sprite, view, ResolutionPolicy, game, Game as EngineGame, Layers, profiler, Material, gfx } from 'cc';
+import { Combat } from './Combat';
 const { ccclass } = _decorator;
 const C = { ink: '#101E22', panel: '#192C30', edge: '#355052', gold: '#FFB54D', cream: '#F3E6CD', muted: '#91A7A4', teal: '#70D9C0', red: '#F4785F' };
 type Particle = { x: number; y: number; vx: number; vy: number; life: number; max: number; size: number; color: string };
 type HitArea = { x: number; y: number; w: number; h: number; action: () => void };
+type Defeated = { node: Node; x: number; y: number; vx: number; vy: number; life: number; angle: number; size: number };
 
 @ccclass('Game')
 export class Game extends Component {
   private model = new Combat();
   private bg!: Graphics; private world!: Graphics; private fx!: Graphics; private hud!: Graphics; private overlay!: Graphics;
+  private details!: Graphics; private attacks!: Graphics;
+  private trainLayer!: Node; private enemyLayer!: Node;
+  private vortexLayer!: Node; private fireMaterial!: Material;
   private overlayNode!: Node; private worldNode!: Node; private labels: Record<string, Label> = {};
   private hitAreas: HitArea[] = []; private particles: Particle[] = []; private state = '';
   private visualTime = 0; private shake = 0; private seed = 137;
   private loco: Node | null = null; private zombieFrame: SpriteFrame | null = null;
+  private carriageFrame: SpriteFrame | null = null;
+  private fireFrame: SpriteFrame | null = null;
+  private vortexSprites = new Map<number,Node>();
   private enemySprites = new Map<number, Node>();
+  private defeated: Defeated[] = [];
+  private chain = 0; private chainLife = 0; private emberClock = 0;
   private toastText = ''; private toastLife = 0;
   private audio: any = null; private sound = true; private lowMotion = false;
   private frameCount = 0; private frameSeconds = 0; private fps = 0;
@@ -26,19 +35,26 @@ export class Game extends Component {
     this.bg = this.layer('Ground');
     this.worldNode = new Node('World'); this.worldNode.layer=Layers.Enum.UI_2D; this.node.addChild(this.worldNode); this.worldNode.addComponent(UITransform).setContentSize(720,1280);
     this.world = this.layer('World drawing', this.worldNode);
+    this.trainLayer = this.group('Train art',this.worldNode);
+    this.details = this.layer('Mechanical parts',this.worldNode);
+    this.enemyLayer = this.group('Enemies',this.worldNode);
+    this.attacks = this.layer('Fire and wind',this.worldNode);
+    this.vortexLayer = this.group('Vortex emission',this.worldNode);
+    this.fireMaterial=new Material();
     this.fx = this.layer('Effects'); this.hud = this.layer('HUD');
     this.labels.brand = this.label(this.node, '末日列车', -310, 570, 29, C.cream, 350, 'left');
-    this.labels.tag = this.label(this.node, '荒原突围  /  01', -310, 535, 15, C.muted, 350, 'left');
+    this.labels.tag = this.label(this.node, '荒原突围  /  01', -310, 535, 20, C.muted, 350, 'left');
     this.labels.time = this.label(this.node, '00:00', 224, 570, 26, C.cream, 115);
-    this.labels.hp = this.label(this.node, '装甲  100', -310, 475, 17, C.cream, 240, 'left');
-    this.labels.kills = this.label(this.node, '击破  0', 212, 475, 17, C.gold, 175);
-    this.labels.stage = this.label(this.node, '', 0, 415, 16, C.teal, 650);
+    this.labels.hp = this.label(this.node, '装甲  100', -310, 475, 23, C.cream, 240, 'left');
+    this.labels.kills = this.label(this.node, '击破  0', 212, 475, 23, C.gold, 175);
+    this.labels.stage = this.label(this.node, '', 0, 415, 22, C.teal, 650);
     this.labels.form = this.label(this.node, '', 0, -442, 25, C.cream, 620);
-    this.labels.hint = this.label(this.node, '', 0, -479, 17, C.muted, 640);
-    this.labels.footer = this.label(this.node, '声音 开', -236, -577, 17, C.muted, 170);
-    this.labels.motion = this.label(this.node, '震动 开', 0, -577, 17, C.muted, 170);
-    this.labels.pause = this.label(this.node, '暂停 Ⅱ', 236, -577, 17, C.cream, 160);
-    this.labels.toast = this.label(this.node, '', 0, 332, 25, C.gold, 680);
+    this.labels.hint = this.label(this.node, '', 0, -479, 22, C.muted, 640);
+    this.labels.footer = this.label(this.node, '声音 开', -236, -577, 22, C.muted, 170);
+    this.labels.motion = this.label(this.node, '镜头 开', 0, -577, 22, C.muted, 170);
+    this.labels.pause = this.label(this.node, '暂停 Ⅱ', 236, -577, 22, C.cream, 160);
+    this.labels.toast = this.label(this.node, '', 0, 375, 24, C.gold, 680);
+    this.labels.chain = this.label(this.node, '', 245, 305, 28, C.gold, 205);
     this.overlayNode = new Node('Panels'); this.overlayNode.layer=Layers.Enum.UI_2D; this.node.addChild(this.overlayNode);
     this.overlayNode.addComponent(UITransform).setContentSize(720,1280);
     this.overlay = this.overlayNode.addComponent(Graphics);
@@ -47,21 +63,31 @@ export class Game extends Component {
     try { const saved = globalThis.localStorage?.getItem('doomsday-settings'); if(saved){const v=JSON.parse(saved);this.sound=v.sound!==false;this.lowMotion=!!v.lowMotion;} } catch {}
     resources.load('art/locomotive/spriteFrame', SpriteFrame, (err,frame) => {
       if (err || !this.isValid) return;
-      this.loco = this.sprite('Locomotive', frame, 174, 261, this.worldNode); this.loco.setPosition(0,235,0);
+      this.loco = this.sprite('Locomotive', frame, 174, 261, this.trainLayer); this.loco.setPosition(0,235,0);
     });
     resources.load('art/zombie/spriteFrame', SpriteFrame, (err,frame) => { if (!err && this.isValid) this.zombieFrame = frame; });
+    resources.load('art/carriage-deck/spriteFrame', SpriteFrame, (err,frame) => {
+      if(err||!this.isValid)return;this.carriageFrame=frame;
+      for(const y of [40,-90])this.sprite('Armored carriage',frame,90,98,this.trainLayer).setPosition(0,y,0);
+    });
+    resources.load('art/fire-vortex/spriteFrame',SpriteFrame,(err,frame)=>{
+      if(err||!this.isValid)return;this.fireFrame=frame;this.state='';
+    });
     // Read-only diagnostic snapshot for smoke checks, without exposing state mutation.
     (globalThis as any).__doomsday = { snapshot: () => ({ phase:this.model.phase, form:this.model.form,
       time:this.model.time, hp:this.model.hp, kills:this.model.kills, enemies:this.model.enemies.length,
       vortices:this.model.vortices.length, seed:this.model.initialSeed, fps:this.fps,
-      art:{ locomotive:!!this.loco,zombie:!!this.zombieFrame }, events:this.model.events.slice() }) };
+      art:{ locomotive:!!this.loco,zombie:!!this.zombieFrame,carriage:!!this.carriageFrame,fire:!!this.fireFrame },
+      effects:{particles:this.particles.length,defeated:this.defeated.length,chain:this.chain}, events:this.model.events.slice() }) };
   }
   onDestroy() {
     game.off(EngineGame.EVENT_HIDE, this.hide, this);
     this.node.off(Node.EventType.TOUCH_END, this.touch, this);
     this.audio?.close?.(); delete (globalThis as any).__doomsday;
+    this.fireMaterial?.destroy();
   }
   private hide() { this.model.pause(); }
+  private group(name:string,parent:Node) {const n=new Node(name);n.layer=Layers.Enum.UI_2D;parent.addChild(n);n.addComponent(UITransform).setContentSize(720,1280);return n;}
   private layer(name: string, parent=this.node) { const n=new Node(name);n.layer=Layers.Enum.UI_2D;parent.addChild(n);n.addComponent(UITransform).setContentSize(720,1280);return n.addComponent(Graphics); }
   private label(parent: Node, text: string, x: number, y: number, size: number, color: string, width=600, align='center') {
     const n=new Node('Text');n.layer=Layers.Enum.UI_2D; parent.addChild(n); const t=n.addComponent(UITransform);t.setContentSize(width,size*2.7);
@@ -74,6 +100,18 @@ export class Game extends Component {
     const n=new Node(name);n.layer=Layers.Enum.UI_2D;parent.addChild(n);n.addComponent(UITransform).setContentSize(w,h);
     const s=n.addComponent(Sprite);s.sizeMode=Sprite.SizeMode.CUSTOM;s.spriteFrame=frame;return n;
   }
+  private emission(sprite:Sprite) {
+    if(!this.fireMaterial.passes.length){
+      const base=sprite.getSharedMaterial(0);
+      if(!base)throw new Error('Fire sprite has no base material');
+      // Copy the actual engine sprite effect rather than relying on its registry name.
+      this.fireMaterial.copy(base,{states:{blendState:{targets:[{
+        blend:true,blendSrc:gfx.BlendFactor.SRC_ALPHA,blendDst:gfx.BlendFactor.ONE,
+        blendSrcAlpha:gfx.BlendFactor.ZERO,blendDstAlpha:gfx.BlendFactor.ONE,
+      }]}}});
+    }
+    sprite.customMaterial=this.fireMaterial;
+  }
   private rect(g:Graphics,x:number,y:number,w:number,h:number,color:string,r=0) {
     g.fillColor=new Color(color);if(r)g.roundRect(x,y,w,h,r);else g.rect(x,y,w,h);g.fill();
   }
@@ -83,7 +121,10 @@ export class Game extends Component {
     for(let i=2;i<points.length;i+=2)g.lineTo(points[i],points[i+1]);g.stroke();
   }
   private begin() {
-    this.unlockAudio();this.model.start(this.seed++);this.particles=[];this.toast('清出一条路');this.tone(180,.15);
+    this.unlockAudio();this.model.start(this.seed++);this.particles=[];this.chain=0;this.chainLife=0;
+    for(const d of this.defeated)d.node.destroy();this.defeated=[];
+    for(const n of this.vortexSprites.values())n.destroy();this.vortexSprites.clear();
+    this.toast('清出一条路');this.tone(180,.15);
   }
   private touch(event: EventTouch) {
     this.unlockAudio();
@@ -112,24 +153,55 @@ export class Game extends Component {
     const delta=Math.min(dt,.1);this.model.advance(delta);
     if(this.model.phase==='combat'||this.model.phase==='menu')this.visualTime+=delta;
     this.frameCount++;this.frameSeconds+=dt;if(this.frameSeconds>=1){this.fps=Math.round(this.frameCount/this.frameSeconds);this.frameCount=0;this.frameSeconds=0;}
-    this.toastLife=Math.max(0,this.toastLife-delta);this.shake=Math.max(0,this.shake-delta*20);
     const frozen=['paused','reward','arrange','upgrade'].includes(this.model.phase);
+    if(!frozen){this.toastLife=Math.max(0,this.toastLife-delta);this.shake=Math.max(0,this.shake-delta*20);
+      this.chainLife=Math.max(0,this.chainLife-delta);if(this.chainLife===0)this.chain=0;}
     if(!frozen)for(const p of this.particles){p.life-=delta;p.x+=p.vx*delta;p.y+=p.vy*delta;p.vx*=.96;p.vy*=.96;}
     this.particles=this.particles.filter(p=>p.life>0);
-    let killSound=false;
+    for(const d of this.defeated){
+      if(!frozen){d.life-=delta;d.x+=d.vx*delta;d.y+=d.vy*delta;d.angle+=delta*220;}
+      d.node.setPosition(d.x,d.y,0);d.node.angle=d.angle;
+      const fade=Math.max(0,d.life/.42);d.node.setScale(.6+.4*fade,.6+.4*fade,1);
+      d.node.getComponent(Sprite)!.color=new Color(154,124,83,Math.round(210*fade));
+      if(d.life<=0)d.node.destroy();
+    }
+    this.defeated=this.defeated.filter(d=>d.life>0);
+    let frameKills=0;
     for(const e of this.model.effects.splice(0)) {
-      const count=e.type==='upgrade'?40:e.type==='kill'?5:9;
+      if(e.type==='wave'){
+        this.toast(({5:'尸群聚集 · 准备接敌',21:'密集尸群 · 补给将至',45:'前方封锁 · 保持火力',50:'最后尸潮 · 全火力突围'} as Record<number,string>)[e.size]||'尸潮来袭');
+        this.tone(210,.28,'triangle');continue;
+      }
+      const count=e.type==='upgrade'?40:e.type==='kill'?7:e.type==='hit'?2:9;
       const color=e.type==='kill'?C.gold:e.type==='damage'?C.red:e.type==='upgrade'?C.teal:C.gold;
-      for(let i=0;i<count&&this.particles.length<230;i++){
+      for(let i=0;i<count&&this.particles.length<200;i++){
         const a=(i/count)*Math.PI*2+this.visualTime, speed=e.type==='upgrade'?150:45+Math.random()*100;
         this.particles.push({x:e.x,y:e.y,vx:Math.cos(a)*speed,vy:Math.sin(a)*speed,life:.4+Math.random()*.3,max:.7,size:e.type==='kill'?3:5,color});
       }
-      if(e.type==='kill')killSound=true;
+      if(e.type==='kill'){
+        frameKills++;
+        if(this.zombieFrame&&this.defeated.length<24){
+          const size=e.enemyKind===2?67:52,n=this.sprite('Defeated',this.zombieFrame,size,size,this.enemyLayer);
+          n.setPosition(e.x,e.y,0);n.angle=30;
+          this.defeated.push({node:n,x:e.x,y:e.y,vx:(e.dx??Math.sign(e.x))*150,vy:(e.dy??.3)*150,life:.42,angle:30,size});
+        }
+      }
       if(e.type==='damage'){this.shake=6;this.tone(65,.15,'triangle');}
       if(e.type==='upgrade'){this.shake=8;this.tone(660,.35,'triangle');}
       if(e.type==='fire')this.tone(100,.09,'triangle');
     }
-    if(killSound)this.tone(130,.06,'triangle');
+    if(frameKills){this.chain+=frameKills;this.chainLife=1.25;this.tone(130+Math.min(12,this.chain)*16,.065,'triangle');
+      if(frameKills>=3)this.shake=Math.max(this.shake,Math.min(4,frameKills));}
+    if(this.model.phase==='combat'){
+      this.emberClock+=delta;
+      if(this.emberClock>.045){this.emberClock=0;
+        for(const v of this.model.vortices.slice(0,9))if(this.particles.length<200){
+          const a=this.visualTime*12+v.id;
+          this.particles.push({x:v.x+Math.cos(a)*v.radius*.65,y:v.y+Math.sin(a)*v.radius*.65,
+            vx:-v.dx*.24+Math.cos(a)*35,vy:-v.dy*.24+Math.sin(a)*35,life:.32,max:.32,size:3,color:C.gold});
+        }
+      }
+    }
     this.worldNode.setPosition(!this.lowMotion?Math.sin(this.visualTime*85)*this.shake:0,0,0);
     this.drawGround();this.drawWorld();this.drawEffects();this.drawHUD();
     if(this.state!==this.model.phase){this.state=this.model.phase;this.drawPanel();}
@@ -160,16 +232,19 @@ export class Game extends Component {
     this.rect(g,-12,y-67,24,15,'#71817A',3);
   }
   private drawWorld() {
-    const g=this.world;g.clear();const m=this.model;
+    const g=this.world,d=this.details,a=this.attacks;g.clear();d.clear();a.clear();const m=this.model;
     const ids=new Set(m.enemies.map(e=>e.id));
     for(const [id,n]of this.enemySprites)if(!ids.has(id)){n.destroy();this.enemySprites.delete(id);}
     for(const e of m.enemies){
       const size=e.kind===2?45:e.kind===1?30:35;
       this.circle(g,e.x+3,e.y-5,size*.42,'#142321');
       if(this.zombieFrame){
-        let n=this.enemySprites.get(e.id);if(!n){n=this.sprite('Enemy',this.zombieFrame,size*1.5,size*1.5,this.worldNode);this.enemySprites.set(e.id,n);}
-        n.setPosition(e.x,e.y,0);n.angle=Math.atan2(-e.x,40-e.y)*180/Math.PI;
-        n.getComponent(Sprite)!.color=new Color(e.flash>0?'#FFF4DA':e.kind===2?'#D2AD78':e.kind===1?'#BAE899':'#FFFFFF');
+        let n=this.enemySprites.get(e.id);if(!n){n=this.sprite('Enemy',this.zombieFrame,size*1.5,size*1.5,this.enemyLayer);this.enemySprites.set(e.id,n);}
+        const gait=Math.sin(this.visualTime*(e.kind===1?19:12)+e.id*2.4);
+        n.setPosition(e.x,e.y+gait*1.6,0);n.angle=(Math.atan2(40-e.y,-e.x)+Math.PI/2)*180/Math.PI+gait*5;
+        n.setScale(e.flash>0?1.1:1,e.flash>0?1.1:1,1);
+        n.getComponent(Sprite)!.color=new Color(e.kind===2?'#D2AD78':e.kind===1?'#BAE899':'#FFFFFF');
+        if(e.flash>0){a.strokeColor=new Color(255,204,111,Math.round(e.flash/.09*170));a.lineWidth=2;a.circle(e.x,e.y,size*.6);a.stroke();}
       }else{
         this.circle(g,e.x,e.y, size*.39,e.flash>0?C.cream:e.kind===2?'#9A9872':'#809D69');
         this.rect(g,e.x-size*.4,e.y-14,size*.8,14,e.kind===1?'#73624A':'#45544C',5);
@@ -177,47 +252,124 @@ export class Game extends Component {
       }
       if(e.hp<e.maxHp){this.rect(g,e.x-16,e.y+26,32,3,'#152325');this.rect(g,e.x-16,e.y+26,32*Math.max(0,e.hp/e.maxHp),3,C.red);}
     }
-    this.car(g,210);this.car(g,40);this.car(g,-90);
+    this.car(g,40);this.car(g,-90);
+    this.rect(g,-10,96,20,19,'#819489',3);this.rect(g,-10,-29,20,16,'#819489',3);
     if(!this.loco){
       this.rect(g,-41,190,82,89,'#5A7772',12);this.rect(g,-31,229,62,32,'#152E35',6);
       this.line(g,[-25,234,-25,254,25,254],C.teal,3);this.rect(g,-45,168,90,17,C.gold,4);
       for(let i=0;i<5;i++)this.line(g,[-38+i*18,168,-28+i*18,185],'#343D34',6);
     }
     // Sprites sit on their own railcars; moving weapon parts are drawn separately.
-    this.circle(g,0,40,33,'#172A30');this.circle(g,0,40,26,'#778C80');this.circle(g,0,40,17,'#364C4B');
     const angle=Math.atan2(m.aim.y-40,m.aim.x),dx=Math.cos(angle),dy=Math.sin(angle);
-    this.line(g,[0,40,dx*46,40+dy*46],'#1B2A2B',24);
-    this.line(g,[0,40,dx*46,40+dy*46],'#B8A77E',15);
-    this.line(g,[dx*28,40+dy*28,dx*49,40+dy*49],C.gold,18);
+    if(m.form==='twin'){
+      this.drawTurret(d,-22,40,angle,.69);this.drawTurret(d,22,40,angle,.69);
+    }else this.drawTurret(d,0,40,angle,m.form==='giant'?1.1:1);
     if(m.form!=='flame'){
-      this.circle(g,0,-90,33,'#172B31');this.circle(g,0,-90,29,'#688C88');
-      for(let i=0;i<4;i++){const a=this.visualTime*15+i*Math.PI/2;this.line(g,[Math.cos(a)*6,-90+Math.sin(a)*6,Math.cos(a+.36)*24,-90+Math.sin(a+.36)*24],C.teal,12);}
-      this.circle(g,0,-90,8,'#E3C787');this.line(g,[0,-32,0,-11],C.teal,5);
-      this.circle(g,0,-24,5,C.gold);
+      const giant=m.form==='giant',radius=giant?36:29;
+      this.circle(d,0,-90,radius+7,'#101C20');this.circle(d,0,-90,radius+3,'#BD9660');this.circle(d,0,-90,radius,'#263E42');
+      for(let i=0;i<5;i++){const spin=this.visualTime*(giant?21:16)+i*Math.PI*2/5;
+        const points=[Math.cos(spin)*7,-90+Math.sin(spin)*7,Math.cos(spin+.4)*radius*.83,-90+Math.sin(spin+.4)*radius*.83];
+        this.line(d,points,'#7FABA5',giant?12:10);
+        this.line(d,points,giant?'#FFD177':'#C8D8BB',3);
+      }
+      this.circle(d,0,-90,8,'#172D31');this.circle(d,0,-90,4,C.gold);
+      this.line(d,[-11,-43,-11,-17],C.teal,4);this.line(d,[11,-43,11,-17],C.teal,4);
+      const flow=(this.visualTime*25)%26;this.circle(d,-11,-43+flow,3,C.cream);this.circle(d,11,-43+flow,3,C.cream);
+      if(giant){
+        this.rect(d,-49,15,10,50,'#334A47',3);this.rect(d,39,15,10,50,'#334A47',3);
+        for(const y of [22,34,46,58]){this.rect(d,-47,y,6,5,C.gold,1);this.rect(d,41,y,6,5,C.gold,1);}
+      }else if(m.form==='twin'){
+        for(const x of [-46,46]){this.circle(d,x,-90,9,'#253F41');this.circle(d,x,-90,5,C.teal);}
+      }
     }else{
-      this.line(g,[-20,-90,20,-90],C.muted,3);this.line(g,[0,-110,0,-70],C.muted,3);
+      this.circle(d,0,-90,24,'#17292CCB');this.line(d,[-15,-90,15,-90],C.muted,3);this.line(d,[0,-105,0,-75],C.muted,3);
     }
     if(m.phase==='arrange'){
-      g.lineWidth=4;g.strokeColor=new Color(C.teal);g.roundRect(-61,-153,122,126,14);g.stroke();
+      d.lineWidth=4;d.strokeColor=new Color(C.teal);d.roundRect(-61,-153,122,126,14);d.stroke();
     }
     if(m.form==='flame'&&m.fireFlash>0&&m.phase!=='menu'){
-      g.fillColor=new Color(255,128,40,135);
-      g.moveTo(dx*35,40+dy*35);
-      for(let i=0;i<=12;i++){const a=angle-.42+i*.07,r=220+Math.sin(this.visualTime*45+i)*18;g.lineTo(Math.cos(a)*r,40+Math.sin(a)*r);}
-      g.close();g.fill();this.line(g,[dx*30,40+dy*30,dx*170,40+dy*170],'#FFDC7A',13);
+      this.drawFlame(a,angle);
     }
-    for(const v of m.vortices)this.drawVortex(g,v.x,v.y,v.radius,this.visualTime*9+v.id);
-    // Foreground embers make the moving attack easy to follow.
+    const vortexIds=new Set(m.vortices.map(v=>v.id));
+    for(const [id,n]of this.vortexSprites)if(!vortexIds.has(id)){n.destroy();this.vortexSprites.delete(id);}
+    for(const v of m.vortices){
+      const fade=Math.min(1,v.life/.3),spin=this.visualTime*9*(v.id%2?1:-1)+v.id;
+      if(this.fireFrame){
+        let n=this.vortexSprites.get(v.id);
+        if(!n){n=this.sprite('Fire vortex',this.fireFrame,v.radius*2.45,v.radius*2.45,this.vortexLayer);this.emission(n.getComponent(Sprite)!);this.vortexSprites.set(v.id,n);}
+        n.setPosition(v.x,v.y,0);n.angle=spin*180/Math.PI;
+        const grow=(.7+.3*Math.min(1,v.age/.12))*(.85+.15*fade);n.setScale(grow,grow,1);
+        n.getComponent(Sprite)!.color=new Color(255,241,210,Math.round(185*fade));
+      }else this.drawVortex(a,v.x,v.y,v.radius,spin,Math.atan2(v.dy,v.dx),fade);
+    }
   }
-  private drawVortex(g:Graphics,x:number,y:number,r:number,spin:number) {
-    this.circle(g,x,y,r*.84,'#D45428');this.circle(g,x,y,r*.62,'#EE872E');
-    for(let j=0;j<3;j++){
-      const points:number[]=[];
-      for(let i=0;i<20;i++){const a=spin+j*Math.PI*2/3+i*.18,rr=r*(.15+i*.035);points.push(x+Math.cos(a)*rr,y+Math.sin(a)*rr);}
-      this.line(g,points,j===1?'#FFE6A1':'#FFC05A',Math.max(5,r*.13));
+  private drawTurret(g:Graphics,x:number,y:number,angle:number,scale:number) {
+    const c=Math.cos(angle),s=Math.sin(angle);
+    const point=(px:number,py:number)=>[x+(px*c-py*s)*scale,y+(px*s+py*c)*scale];
+    const part=(points:number[],color:string)=>{const out:number[]=[];for(let i=0;i<points.length;i+=2)out.push(...point(points[i],points[i+1]));this.polygon(g,out,color);};
+    this.circle(g,x+3,y-3,33*scale,'#111D21');this.circle(g,x,y,30*scale,'#B09060');this.circle(g,x,y,26*scale,'#36504D');
+    for(const yy of [-18,18]){
+      part([-24,yy-7,-2,yy-7,2,yy-3,2,yy+5,-22,yy+7,-26,yy+2],'#263A3B');
+      part([-22,yy-4,-3,yy-4,-3,yy+3,-22,yy+4],'#C27436');
+      part([-17,yy-6,-14,yy-6,-14,yy+5,-17,yy+5],'#CFB17C');
     }
-    this.circle(g,x,y,r*.16,'#FFF2C2');
-    for(let i=0;i<5;i++){const a=spin*.5+i*1.256;this.circle(g,x+Math.cos(a)*r*1.06,y+Math.sin(a)*r*1.06,3,C.gold);}
+    part([-21,-11,9,-11,19,-7,19,7,9,11,-21,11,-25,0],'#667E70');
+    part([-16,4,11,4,16,7,-16,8],'#B0B49A');
+    part([6,-7,45,-7,50,-4,50,4,45,7,6,7],'#162C30');
+    part([9,-4,46,-4,46,3,9,3],'#AF9563');
+    for(const xx of [20,29,38])part([xx,-8,xx+4,-8,xx+4,8,xx,8],'#3E5350');
+    part([43,-10,54,-10,57,-5,57,5,54,10,43,10],'#D58236');
+    const muzzle=point(53,0);this.circle(g,muzzle[0],muzzle[1],5*scale,'#15292D');this.circle(g,muzzle[0],muzzle[1],2.5*scale,C.gold);
+    const cap=point(-14,0);this.circle(g,cap[0],cap[1],5*scale,'#243B3E');
+  }
+  private drawFlame(g:Graphics,angle:number) {
+    for(let j=0;j<7;j++){
+      const a=angle+(j-3)*.105,length=145+Math.sin(this.visualTime*29+j*1.8)*31+(3-Math.abs(j-3))*22;
+      for(let layer=0;layer<2;layer++){
+        const points:number[]=[],half=(layer?5:12),reach=length*(layer?.82:1);
+        for(let i=0;i<=12;i++){const t=i/12,r=32+t*reach,w=Math.sin(t*Math.PI)*half;
+          const bend=Math.sin(t*9-this.visualTime*34+j)*t*8;
+          points.push(Math.cos(a)*r-Math.sin(a)*(bend+w),40+Math.sin(a)*r+Math.cos(a)*(bend+w));}
+        for(let i=12;i>=0;i--){const t=i/12,r=32+t*reach,w=Math.sin(t*Math.PI)*half,bend=Math.sin(t*9-this.visualTime*34+j)*t*8;
+          points.push(Math.cos(a)*r-Math.sin(a)*(bend-w),40+Math.sin(a)*r+Math.cos(a)*(bend-w));}
+        this.polygon(g,points,layer?'#FFD68ED9':'#EE7325B0');
+      }
+    }
+    this.circle(g,Math.cos(angle)*37,40+Math.sin(angle)*37,8,'#FFF1BA');
+  }
+  private polygon(g:Graphics,points:number[],color:string) {
+    g.fillColor=new Color(color);g.moveTo(points[0],points[1]);
+    for(let i=2;i<points.length;i+=2)g.lineTo(points[i],points[i+1]);g.close();g.fill();
+  }
+  private drawVortex(g:Graphics,x:number,y:number,r:number,spin:number,heading=0,life=1) {
+    if(g===this.overlay&&this.fireFrame){
+      const n=this.sprite('Vortex preview',this.fireFrame,r*2.45,r*2.45,this.overlayNode);
+      n.setPosition(x,y,0);n.angle=spin*180/Math.PI;this.emission(n.getComponent(Sprite)!);
+      return;
+    }
+    const radius=r*(.96+Math.sin(spin*1.8)*.035)*(.65+.35*life);
+    this.circle(g,x,y,radius*.87,'#FF80201B');
+    // Open spiral ribbons leave enemy silhouettes visible between the flame arms.
+    for(let arm=0;arm<3;arm++)for(let layer=0;layer<2;layer++){
+      const points:number[]=[];
+      for(let side=0;side<2;side++)for(let n=0;n<=27;n++){
+        const t=(side?27-n:n)/27,a=spin+arm*Math.PI*2/3+t*4.9;
+        const edge=Math.sin(t*32+spin*2)*t*.019;
+        const width=(.028+.075*Math.sin(Math.PI*t))*(layer?.42:1)*(side?-1:1);
+        const rr=radius*(.13+.83*t+width+edge);
+        points.push(x+Math.cos(a)*rr,y+Math.sin(a)*rr);
+      }
+      this.polygon(g,points,layer?'#FFE4A8ED':'#F58932D9');
+    }
+    for(let i=0;i<6;i++){
+      const a=spin*.72+i*Math.PI/3, rr=radius*(.91+Math.sin(spin+i)*.07);
+      this.line(g,[x+Math.cos(a)*rr,y+Math.sin(a)*rr,x+Math.cos(a-.17)*rr*1.07,y+Math.sin(a-.17)*rr*1.07],'#F5A348AA',3);
+    }
+    for(let i=0;i<3;i++){
+      const a=heading+Math.PI+(i-1)*.3,rr=radius*(1.05+(Math.sin(spin+i)*.5+.5)*.35);
+      this.line(g,[x+Math.cos(a)*radius*.72,y+Math.sin(a)*radius*.72,x+Math.cos(a)*rr,y+Math.sin(a)*rr],'#E7793048',radius*.07);
+    }
+    this.circle(g,x,y,radius*.115,'#FFF1BDB0');this.circle(g,x,y,radius*.055,'#FFFFFFD9');
   }
   private drawEffects() {
     const g=this.fx;g.clear();
@@ -231,12 +383,14 @@ export class Game extends Component {
     this.labels.hp.string=`装甲  ${m.hp}`;this.labels.kills.string=`击破  ${m.kills}`;
     const elapsed=Math.min(60,Math.floor(m.time+.00001));
     this.labels.time.string=`${Math.floor(elapsed/60).toString().padStart(2,'0')}:${(elapsed%60).toString().padStart(2,'0')}`;
-    this.labels.stage.string=m.time>=50?'最后封锁  ·  冲出去！':m.time>=25?'尸潮升级  ·  全火力推进':m.time>=8?'改装完成  ·  火力释放':'前方发现尸群';
+    const t=m.time;
+    this.labels.stage.string=t>=50?'最后封锁  ·  冲出去！':t>=45?'封锁线逼近  ·  保持火力':t>=29?'荒原尸潮  ·  全火力推进':t>=25?'进化完成  ·  清开一条路':t>=21?'密集尸群  ·  补给即将到达':t>=11?'火焰龙卷  ·  推进中':t>=8?'改装完成  ·  火力释放':t>=5?'尸群聚集  ·  准备接敌':'前方发现尸群';
     this.labels.form.string={flame:'喷火车',tornado:'火焰龙卷',twin:'双生龙卷',giant:'巨型龙卷'}[m.form];
     this.labels.hint.string=m.phase==='arrange'?'点一下发光车位，接上风扇':m.time<8?'突破尸潮，寻找改装补给':m.time<25?'下一份补给：选择龙卷进化':'守住列车，突破最后封锁';
-    this.labels.footer.string=`声音 ${this.sound?'开':'关'}`;this.labels.motion.string=`震动 ${this.lowMotion?'关':'开'}`;
+    this.labels.footer.string=`声音 ${this.sound?'开':'关'}`;this.labels.motion.string=`镜头 ${this.lowMotion?'关':'开'}`;
     this.labels.pause.string=m.phase==='paused'?'继续 ▶':'暂停 Ⅱ';
     this.labels.toast.string=this.toastLife>0?this.toastText:'';
+    this.labels.chain.string=this.chain>=4&&m.phase==='combat'?`${this.chain} 连破`:'';
   }
   private button(text:string,x:number,y:number,w:number,h:number,action:()=>void,accent=true) {
     this.rect(this.overlay,x-w/2,y-h/2,w,h,accent?C.gold:'#2B4346',12);
