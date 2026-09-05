@@ -12,10 +12,18 @@ export class Combat {
   time = 0; hp = 100; kills = 0; seed = 137; initialSeed = 137;
   enemies: Enemy[] = []; vortices: Vortex[] = []; effects: Effect[] = [];
   events: { type: string; time: number; value?: string }[] = [];
-  aim = { x: 220, y: 40 }; fireFlash = 0;
+  aim = { x: 220, y: 40 }; fireFlash = 0; turretAngle = 0;
   private nextId = 0; private spawnClock = 0; private fireClock = 0;
   private accumulator = 0; private rewarded = false; private upgraded = false;
   private nextWave = 0;
+  private targetId: number | null = null; private previousTurretAngle = 0;
+
+  private angleDelta(from: number, to: number) { return Math.atan2(Math.sin(to - from), Math.cos(to - from)); }
+  get renderTurretAngle() {
+    if (this.phase !== 'combat') return this.turretAngle;
+    const alpha = Math.min(1, Math.max(0, this.accumulator * 30));
+    return this.previousTurretAngle + this.angleDelta(this.previousTurretAngle, this.turretAngle) * alpha;
+  }
 
   start(seed = 137) {
     this.phase = 'combat'; this.form = 'flame'; this.time = 0; this.hp = 100; this.kills = 0;
@@ -23,6 +31,8 @@ export class Combat {
     this.enemies = []; this.vortices = []; this.effects = []; this.events = [];
     this.nextId = 0; this.spawnClock = 0; this.fireClock = 0; this.accumulator = 0;
     this.rewarded = false; this.upgraded = false; this.nextWave = 0;
+    this.targetId = null; this.turretAngle = 0; this.previousTurretAngle = 0;
+    this.aim = { x: 220, y: 40 }; this.fireFlash = 0;
     this.events.push({ type: 'run_start', time: 0 });
     for (let i = 0; i < 5; i++) this.spawn(true);
   }
@@ -53,13 +63,17 @@ export class Combat {
     return t < 5 ? 1.25 : t < 8 ? 2.6 : t < 11 ? .8 : t < 19 ? 4.2 : t < 21 ? 5.8 :
       t < 25 ? 7 : t < 29 ? 1.6 : t < 40 ? 6.2 : t < 45 ? 7.5 : t < 50 ? 10 : t < 57 ? 12 : 4;
   }
-  advance(delta: number) {
-    if (this.phase !== 'combat') return;
-    this.accumulator += Math.min(Math.max(delta, 0), .1);
-    while (this.accumulator >= 1 / 30 && this.phase === 'combat') {
-      this.accumulator -= 1 / 30; this.step(1 / 30);
+  /** Returns simulated seconds actually advanced, including stops at modal choices. */
+  advance(delta: number, speed = 1): number {
+    if (this.phase !== 'combat') return 0;
+    const realDelta = Number.isFinite(delta) ? Math.min(Math.max(delta, 0), .1) : 0;
+    this.accumulator += realDelta * (speed === 2 || speed === 4 ? speed : 1);
+    let steps = 0;
+    while (this.accumulator + 1e-10 >= 1 / 30 && this.phase === 'combat') {
+      this.accumulator = Math.max(0, this.accumulator - 1 / 30); this.step(1 / 30); steps++;
     }
-    if (this.phase !== 'combat') this.accumulator = 0;
+    if (this.phase !== 'combat') { this.accumulator = 0; this.previousTurretAngle = this.turretAngle; }
+    return steps / 30;
   }
   private step(dt: number) {
     this.time += dt; this.fireFlash = Math.max(0, this.fireFlash - dt);
@@ -76,13 +90,25 @@ export class Combat {
       } else { e.x += dx / distance * e.speed * dt; e.y += dy / distance * e.speed * dt; }
     }
     const candidates = this.enemies.filter(e => e.hp > 0).sort((a,b) => Math.hypot(a.x,a.y-40)-Math.hypot(b.x,b.y-40));
-    const target = candidates[0];
-    if (target) this.aim = { x: target.x, y: target.y };
+    const closest = candidates[0], locked = candidates.find(e => e.id === this.targetId);
+    // Keep similar-distance targets stable; a substantially closer threat can interrupt.
+    const target = locked && closest && Math.hypot(locked.x, locked.y - 40) <= Math.hypot(closest.x, closest.y - 40) * 1.3 + 20 ? locked : closest;
+    this.targetId = target ? target.id : null;
+    this.previousTurretAngle = this.turretAngle;
+    let aligned = false;
+    if (target) {
+      this.aim = { x: target.x, y: target.y };
+      const desired = Math.atan2(target.y - 40, target.x);
+      const error = this.angleDelta(this.turretAngle, desired);
+      const turn = Math.max(-10 * dt, Math.min(10 * dt, error * (1 - Math.exp(-20 * dt))));
+      this.turretAngle = this.angleDelta(0, this.turretAngle + turn);
+      aligned = Math.abs(this.angleDelta(this.turretAngle, desired)) < .2;
+    }
     this.fireClock -= dt;
-    if (target && this.fireClock <= 0) {
+    if (target && aligned && this.fireClock <= 0) {
       if (this.form === 'flame') {
         this.fireClock = .12; this.fireFlash = .16;
-        const angle = Math.atan2(target.y - 40, target.x);
+        const angle = this.turretAngle;
         for (const e of candidates) {
           const a = Math.atan2(e.y - 40, e.x);
           const diff = Math.atan2(Math.sin(a - angle), Math.cos(a - angle));
@@ -90,7 +116,7 @@ export class Combat {
         }
       } else {
         this.fireClock = this.form === 'twin' ? .48 : this.form === 'giant' ? .68 : .65;
-        const angle = Math.atan2(target.y - 40, target.x);
+        const angle = this.turretAngle;
         this.vortex(angle + (this.form === 'twin' ? -.22 : 0));
         if (this.form === 'twin') this.vortex(angle + .22);
         this.effects.push({ type: 'fire', x: 0, y: 40, size: 18 });
@@ -168,7 +194,7 @@ export class Combat {
     this.events.push({ type: 'upgrade_pick', value: form, time: this.time });
     this.effects.push({ type: 'upgrade', x: 0, y: 40, size: 130 });
   }
-  pause() { if (!['menu','win','lose','paused'].includes(this.phase)) { this.previous = this.phase; this.phase = 'paused'; this.accumulator = 0; } }
+  pause() { if (!['menu','win','lose','paused'].includes(this.phase)) { this.previous = this.phase; this.phase = 'paused'; this.accumulator = 0; this.previousTurretAngle = this.turretAngle; } }
   resume() { if (this.phase === 'paused') this.phase = this.previous; }
   private finish(phase: 'win' | 'lose') { this.phase = phase; this.events.push({ type: 'run_end', value: phase, time: this.time }); }
 }

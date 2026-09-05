@@ -27,6 +27,7 @@ export class Game extends Component {
   private toastText = ''; private toastLife = 0;
   private audio: any = null; private sound = true; private lowMotion = false;
   private frameCount = 0; private frameSeconds = 0; private fps = 0;
+  private debugSpeed = 1;
 
   onLoad() {
     profiler.hideStats();
@@ -50,9 +51,10 @@ export class Game extends Component {
     this.labels.stage = this.label(this.node, '', 0, 415, 22, C.teal, 650);
     this.labels.form = this.label(this.node, '', 0, -442, 25, C.cream, 620);
     this.labels.hint = this.label(this.node, '', 0, -479, 22, C.muted, 640);
-    this.labels.footer = this.label(this.node, '声音 开', -236, -577, 22, C.muted, 170);
-    this.labels.motion = this.label(this.node, '镜头 开', 0, -577, 22, C.muted, 170);
-    this.labels.pause = this.label(this.node, '暂停 Ⅱ', 236, -577, 22, C.cream, 160);
+    this.labels.footer = this.label(this.node, '声音 开', -270, -577, 21, C.muted, 162);
+    this.labels.motion = this.label(this.node, '镜头 开', -90, -577, 21, C.muted, 162);
+    this.labels.speed = this.label(this.node, '倍速 ×1', 90, -577, 21, C.gold, 162);
+    this.labels.pause = this.label(this.node, '暂停 Ⅱ', 270, -577, 21, C.cream, 162);
     this.labels.toast = this.label(this.node, '', 0, 375, 24, C.gold, 680);
     this.labels.chain = this.label(this.node, '', 245, 305, 28, C.gold, 205);
     this.overlayNode = new Node('Panels'); this.overlayNode.layer=Layers.Enum.UI_2D; this.node.addChild(this.overlayNode);
@@ -67,7 +69,7 @@ export class Game extends Component {
     });
     resources.load('art/zombie/spriteFrame', SpriteFrame, (err,frame) => { if (!err && this.isValid) this.zombieFrame = frame; });
     resources.load('art/carriage-deck/spriteFrame', SpriteFrame, (err,frame) => {
-      if(err||!this.isValid)return;this.carriageFrame=frame;
+      if(err||!this.isValid)return;this.carriageFrame=frame;this.state='';
       for(const y of [40,-90])this.sprite('Armored carriage',frame,90,98,this.trainLayer).setPosition(0,y,0);
     });
     resources.load('art/fire-vortex/spriteFrame',SpriteFrame,(err,frame)=>{
@@ -76,7 +78,8 @@ export class Game extends Component {
     // Read-only diagnostic snapshot for smoke checks, without exposing state mutation.
     (globalThis as any).__doomsday = { snapshot: () => ({ phase:this.model.phase, form:this.model.form,
       time:this.model.time, hp:this.model.hp, kills:this.model.kills, enemies:this.model.enemies.length,
-      vortices:this.model.vortices.length, seed:this.model.initialSeed, fps:this.fps,
+      vortices:this.model.vortices.length, seed:this.model.initialSeed, fps:this.fps, speed:this.debugSpeed,
+      turretAngle:this.model.turretAngle, renderTurretAngle:this.model.renderTurretAngle,
       art:{ locomotive:!!this.loco,zombie:!!this.zombieFrame,carriage:!!this.carriageFrame,fire:!!this.fireFrame },
       effects:{particles:this.particles.length,defeated:this.defeated.length,chain:this.chain}, events:this.model.events.slice() }) };
   }
@@ -131,8 +134,9 @@ export class Game extends Component {
     const p=event.getUILocation(), local=this.node.getComponent(UITransform)!.convertToNodeSpaceAR(new Vec3(p.x,p.y,0));
     for(let i=this.hitAreas.length-1;i>=0;i--){const a=this.hitAreas[i];if(Math.abs(local.x-a.x)<=a.w/2&&Math.abs(local.y-a.y)<=a.h/2){a.action();this.tone(470,.045);return;}}
     if(local.y < -540) {
-      if(local.x < -120) this.sound=!this.sound;
-      else if(local.x<120) this.lowMotion=!this.lowMotion;
+      if(local.x < -180) this.sound=!this.sound;
+      else if(local.x<0) this.lowMotion=!this.lowMotion;
+      else if(local.x<180) this.debugSpeed=this.debugSpeed===4?1:this.debugSpeed*2;
       else { if(this.model.phase==='paused')this.model.resume();else this.model.pause(); }
       try{globalThis.localStorage?.setItem('doomsday-settings',JSON.stringify({sound:this.sound,lowMotion:this.lowMotion}));}catch{}
     }
@@ -150,13 +154,16 @@ export class Game extends Component {
   }
   private toast(text:string) {this.toastText=text;this.toastLife=2.2;}
   update(dt:number) {
-    const delta=Math.min(dt,.1);this.model.advance(delta);
-    if(this.model.phase==='combat'||this.model.phase==='menu')this.visualTime+=delta;
+    const before=this.model.phase,realDelta=Math.min(Math.max(dt,0),.1);
+    const elapsed=this.model.advance(dt,this.debugSpeed);
+    const delta=before==='combat'?(this.model.phase==='combat'?realDelta*this.debugSpeed:elapsed):
+      ['menu','win','lose'].includes(before)?realDelta:0;
+    if(before==='combat'||before==='menu')this.visualTime+=delta;
     this.frameCount++;this.frameSeconds+=dt;if(this.frameSeconds>=1){this.fps=Math.round(this.frameCount/this.frameSeconds);this.frameCount=0;this.frameSeconds=0;}
     const frozen=['paused','reward','arrange','upgrade'].includes(this.model.phase);
     if(!frozen){this.toastLife=Math.max(0,this.toastLife-delta);this.shake=Math.max(0,this.shake-delta*20);
       this.chainLife=Math.max(0,this.chainLife-delta);if(this.chainLife===0)this.chain=0;}
-    if(!frozen)for(const p of this.particles){p.life-=delta;p.x+=p.vx*delta;p.y+=p.vy*delta;p.vx*=.96;p.vy*=.96;}
+    if(!frozen)for(const p of this.particles){p.life-=delta;p.x+=p.vx*delta;p.y+=p.vy*delta;const drag=Math.pow(.96,delta*60);p.vx*=drag;p.vy*=drag;}
     this.particles=this.particles.filter(p=>p.life>0);
     for(const d of this.defeated){
       if(!frozen){d.life-=delta;d.x+=d.vx*delta;d.y+=d.vy*delta;d.angle+=delta*220;}
@@ -260,19 +267,13 @@ export class Game extends Component {
       for(let i=0;i<5;i++)this.line(g,[-38+i*18,168,-28+i*18,185],'#343D34',6);
     }
     // Sprites sit on their own railcars; moving weapon parts are drawn separately.
-    const angle=Math.atan2(m.aim.y-40,m.aim.x),dx=Math.cos(angle),dy=Math.sin(angle);
+    const angle=m.renderTurretAngle;
     if(m.form==='twin'){
       this.drawTurret(d,-22,40,angle,.69);this.drawTurret(d,22,40,angle,.69);
     }else this.drawTurret(d,0,40,angle,m.form==='giant'?1.1:1);
     if(m.form!=='flame'){
       const giant=m.form==='giant',radius=giant?36:29;
-      this.circle(d,0,-90,radius+7,'#101C20');this.circle(d,0,-90,radius+3,'#BD9660');this.circle(d,0,-90,radius,'#263E42');
-      for(let i=0;i<5;i++){const spin=this.visualTime*(giant?21:16)+i*Math.PI*2/5;
-        const points=[Math.cos(spin)*7,-90+Math.sin(spin)*7,Math.cos(spin+.4)*radius*.83,-90+Math.sin(spin+.4)*radius*.83];
-        this.line(d,points,'#7FABA5',giant?12:10);
-        this.line(d,points,giant?'#FFD177':'#C8D8BB',3);
-      }
-      this.circle(d,0,-90,8,'#172D31');this.circle(d,0,-90,4,C.gold);
+      this.drawFan(d,0,-90,radius,this.visualTime*(giant?21:16));
       this.line(d,[-11,-43,-11,-17],C.teal,4);this.line(d,[11,-43,11,-17],C.teal,4);
       const flow=(this.visualTime*25)%26;this.circle(d,-11,-43+flow,3,C.cream);this.circle(d,11,-43+flow,3,C.cream);
       if(giant){
@@ -321,6 +322,41 @@ export class Game extends Component {
     part([43,-10,54,-10,57,-5,57,5,54,10,43,10],'#D58236');
     const muzzle=point(53,0);this.circle(g,muzzle[0],muzzle[1],5*scale,'#15292D');this.circle(g,muzzle[0],muzzle[1],2.5*scale,C.gold);
     const cap=point(-14,0);this.circle(g,cap[0],cap[1],5*scale,'#243B3E');
+  }
+  private drawFan(g:Graphics,x:number,y:number,r:number,spin:number) {
+    // The reward preview and installed equipment share the same mechanical design.
+    this.circle(g,x+2,y-3,r+7,'#101C20');this.circle(g,x,y,r+5,'#A38656');
+    this.circle(g,x,y,r+2,'#71908B');this.circle(g,x,y,r,'#152B30');
+    this.circle(g,x,y,r*.85,'#203A3F');
+    for(let i=0;i<5;i++){
+      const a=spin+i*Math.PI*2/5,c=Math.cos(a),s=Math.sin(a);
+      const points:number[]=[];
+      for(const [px,py] of [[.12,-.1],[.58,-.32],[.86,-.17],[.82,.08],[.52,.21],[.15,.1]])
+        points.push(x+(px*c-py*s)*r,y+(px*s+py*c)*r);
+      this.polygon(g,points,'#9EBEB1');
+      this.line(g,[x+Math.cos(a-.25)*r*.3,y+Math.sin(a-.25)*r*.3,x+Math.cos(a-.17)*r*.77,y+Math.sin(a-.17)*r*.77],'#D3D8B9',Math.max(1,r*.045));
+    }
+    // Stationary cross-bracing and bolts distinguish an industrial blower from a toy pinwheel.
+    for(let i=0;i<4;i++){
+      const a=Math.PI/4+i*Math.PI/2,c=Math.cos(a),s=Math.sin(a);
+      this.line(g,[x+c*r*.22,y+s*r*.22,x+c*r,y+s*r],'#3B5557',r*.075);
+      this.circle(g,x+c*(r+2),y+s*(r+2),r*.055,'#E2BE7C');
+    }
+    this.circle(g,x,y,r*.24,'#14292E');this.circle(g,x,y,r*.16,'#AF8C50');this.circle(g,x,y,r*.075,'#EDD4A1');
+  }
+  private fanPreview() {
+    const n=this.group('Fan carriage preview',this.overlayNode);n.setPosition(0,51,0);
+    const base=this.layer('Carriage frame',n);
+    // Preview uses the installed railcar proportions, with wheels and couplers visible.
+    for(const x of [-65,51])for(const y of [-46,18])this.rect(base,x,y,14,30,'#0A171C',4);
+    this.rect(base,-13,-82,26,15,'#819489',3);this.rect(base,-13,68,26,13,'#819489',3);
+    this.rect(base,-58,-69,116,138,'#6C8174',12);
+    if(this.carriageFrame)this.sprite('Armor deck',this.carriageFrame,110,128,n);
+    const parts=this.layer('Blower assembly',n);
+    if(!this.carriageFrame)this.rect(parts,-52,-62,104,124,'#304C4C',8);
+    for(const x of [-51,39])for(const y of [-52,-42,40,50])this.rect(parts,x,y,12,4,'#D79847',1);
+    this.drawFan(parts,0,0,42,.25);
+    this.rect(parts,-16,49,32,11,'#23393D',3);this.line(parts,[-10,55,10,55],C.teal,3);
   }
   private drawFlame(g:Graphics,angle:number) {
     for(let j=0;j<7;j++){
@@ -388,6 +424,8 @@ export class Game extends Component {
     this.labels.form.string={flame:'喷火车',tornado:'火焰龙卷',twin:'双生龙卷',giant:'巨型龙卷'}[m.form];
     this.labels.hint.string=m.phase==='arrange'?'点一下发光车位，接上风扇':m.time<8?'突破尸潮，寻找改装补给':m.time<25?'下一份补给：选择龙卷进化':'守住列车，突破最后封锁';
     this.labels.footer.string=`声音 ${this.sound?'开':'关'}`;this.labels.motion.string=`镜头 ${this.lowMotion?'关':'开'}`;
+    this.labels.speed.string=`倍速 ×${this.debugSpeed}`;
+    this.labels.tag.string=this.debugSpeed===1?'荒原突围  /  01':`荒原突围  /  01 · 调试 ×${this.debugSpeed}`;
     this.labels.pause.string=m.phase==='paused'?'继续 ▶':'暂停 Ⅱ';
     this.labels.toast.string=this.toastLife>0?this.toastText:'';
     this.labels.chain.string=this.chain>=4&&m.phase==='combat'?`${this.chain} 连破`:'';
@@ -424,9 +462,7 @@ export class Game extends Component {
     }else if(phase==='reward'){
       this.label(this.overlayNode,'发现改装补给',0,250,34,C.cream,550);
       this.label(this.overlayNode,'风扇车',0,164,30,C.teal,500);
-      this.circle(g,0,53,57,'#304D50');
-      for(let i=0;i<4;i++){const a=i*Math.PI/2;this.line(g,[Math.cos(a)*10,53+Math.sin(a)*10,Math.cos(a+.4)*42,53+Math.sin(a+.4)*42],C.teal,19);}
-      this.circle(g,0,53,13,C.gold);
+      this.fanPreview();
       this.label(this.overlayNode,'喷火 ＋ 风扇 → 火焰龙卷',0,-62,27,C.cream,558);
       this.label(this.overlayNode,'旋转火柱穿过怪群，持续灼烧沿途敌人',0,-114,18,C.muted,550);
       this.button('装配风扇车',0,-251,474,76,()=>m.beginArrange());
