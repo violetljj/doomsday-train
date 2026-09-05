@@ -1,0 +1,28 @@
+{
+  "name": "Doomsday Train",
+  "platform": "web-mobile",
+  "buildPath": "project://build",
+  "debug": true,
+  "sourceMaps": true,
+  "md5Cache": false,
+  "startScene": "32645336-7edc-4474-9317-2bb2dbfe1376",
+  "scenes": [
+    {
+      "url": "db://assets/scenes/Main.scene",
+      "uuid": "32645336-7edc-4474-9317-2bb2dbfe1376"
+    }
+  ],
+  "designResolution": {
+    "width": 720,
+    "height": 1280,
+    "fitWidth": true,
+    "fitHeight": false
+  },
+  "packages": {
+    "web-mobile": {
+      "orientation": "portrait",
+      "embedWebDebugger": false
+    }
+  },
+  "outputName": "web-mobile"
+}

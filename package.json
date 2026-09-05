@@ -1,0 +1,16 @@
+{
+  "name": "doomsday-train",
+  "uuid": "52bba76b-2ac2-4ce6-ae5c-333cad55db9b",
+  "creator": {
+    "version": "3.8.8"
+  },
+  "version": "0.1.0",
+  "private": true,
+  "description": "One-minute train upgrade survival prototype",
+  "scripts": {
+    "build:web": "powershell -ExecutionPolicy Bypass -File tools/build-web.ps1",
+    "serve": "node tools/serve.mjs",
+    "test": "node --experimental-strip-types tests/combat.test.mjs",
+    "typecheck": "powershell -ExecutionPolicy Bypass -File tools/check-types.ps1"
+  }
+}
