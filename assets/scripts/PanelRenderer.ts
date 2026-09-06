@@ -1,4 +1,4 @@
-import { CARS, MODS, RECIPES, ROLE_NAMES } from './Catalog.ts';
+import { CAR_TYPES, CARS, MODS, RECIPES, ROLE_NAMES } from './Catalog.ts';
 import type { CarType, CarRole, ModId } from './Catalog.ts';
 import type { Combat } from './Combat.ts';
 
@@ -17,7 +17,9 @@ export interface PanelPrimitives {
 export interface PanelActions {
   begin(): void;
   selectSlot(index: number): void;
-  setAtlas(open: boolean, page: number): void;
+  setAtlas(open: boolean, page: number, cars?: boolean): void;
+  installPending(): void;
+  mergePending(): void;
   chooseOffer(index: number): void;
   discardOffer(): void;
   resumeWorkshop(): void;
@@ -32,6 +34,7 @@ export interface PanelContext {
   newRecipes: ReadonlySet<string>;
   atlas: boolean;
   atlasPage: number;
+  atlasCars: boolean;
   selectedSlot: number;
   draw: PanelPrimitives;
   actions: PanelActions;
@@ -118,21 +121,22 @@ function menu(c: PanelContext) {
   brush(d, 142, -327, 30, 4, '#B2D5D899');
   d.label('发车', 0, -351, 62, P.cream, 265, 'center', 'display');
   d.addHitArea(0, -351, 352, 104, c.actions.begin);
-  d.button(`联动图鉴  ${c.knownRecipes.size} / ${RECIPES.length}`, 0, -465, 352, 64,
-    () => c.actions.setAtlas(true, 0), false);
+  d.button('车厢与联动图鉴', 0, -465, 352, 64,
+    () => c.actions.setAtlas(true, 0, true), false);
 }
 
 function workshop(c: PanelContext) {
   const d = c.draw, m = c.model, links = m.links, hasSpace = m.slots.some(car => !car);
-  const selectedCar = !m.pendingCar && c.selectedSlot >= 0 ? m.slots[c.selectedSlot] : null;
+  const selectedCar = c.selectedSlot >= 0 ? m.slots[c.selectedSlot] : null;
+  const canMerge = !!selectedCar && selectedCar.type === m.pendingCar;
   const installed = selectedCar ? (Object.keys(selectedCar.mods) as ModId[])
     .filter(id => MODS[id] && (selectedCar.mods[id] || 0) > 0) : [];
   heading(d, '列车工坊', m.pendingCar
-    ? `待装 ${CARS[m.pendingCar].name} · ${hasSpace ? '未满插入，保留旧车' : '五槽已满，选择替换'}`
+    ? `待装 ${CARS[m.pendingCar].name} · ${hasSpace ? '插入 / 同车合并' : '替换 / 同车合并'}`
     : selectedCar ? `${CARS[selectedCar.type].name} · 已装 ${installed.length} 项词条 · 强化 ${selectedCar.level} 级`
       : '辅助相邻武器 · 前后顺序不限');
   const instruction = m.pendingCar
-    ? hasSpace ? '点旧车位置插入，或点空槽直接装入' : '点一节旧车，用新车替换它'
+    ? canMerge ? `同车合并：强化 ${selectedCar!.level} → ${selectedCar!.level + 1} 级，保留词条` : '选择目标槽位'
     : c.selectedSlot >= 0 ? `已选 ${c.selectedSlot + 1} 号位 → 再点另一节车厢交换`
       : '先点一节车厢，再点另一节交换位置';
   d.label(instruction, 0, 258, 22, c.selectedSlot >= 0 ? P.teal : P.gold, 576);
@@ -155,7 +159,7 @@ function workshop(c: PanelContext) {
       d.cardIcon(car.type, x, 146 + lift, 99);
       d.label(data.name, x, 87 + lift, 23, P.cream, width - 6, 'center', 'display');
       const modCount = (Object.keys(car.mods) as ModId[]).reduce((sum, id) => sum + (car.mods[id] || 0), 0);
-      const state = m.pendingCar ? hasSpace ? '此处插入' : '此车替换'
+      const state = m.pendingCar ? selected ? '目标槽位' : car.type === m.pendingCar ? '可合并升级' : hasSpace ? '可插入' : '可替换'
         : selected ? '已选中' : c.selectedSlot >= 0 ? '点此交换' : modCount ? `改装 ×${modCount}` : car.level ? `强化 ${car.level} 级` : '基础车厢';
       d.label(state, x, 61 + lift, 20, selected || c.selectedSlot >= 0 ? P.teal : P.muted, width - 6);
     } else {
@@ -163,7 +167,7 @@ function workshop(c: PanelContext) {
       brush(d, x, 145 + lift, 69, 58, '#9D8FAD22');
       d.line([x - 13, 145 + lift, x + 13, 145 + lift], P.muted, 3);
       d.line([x, 132 + lift, x, 158 + lift], P.muted, 3);
-      d.label(m.pendingCar ? '点此装入' : c.selectedSlot >= 0 ? '交换到此' : '空槽可交换', x, 91 + lift, 20, P.muted, width - 6);
+      d.label(m.pendingCar ? selected ? '目标槽位' : '可装入' : c.selectedSlot >= 0 ? '交换到此' : '空槽可交换', x, 91 + lift, 20, P.muted, width - 6);
     }
     d.addHitArea(x, 139, width, 187, () => c.actions.selectSlot(i));
   });
@@ -202,19 +206,36 @@ function workshop(c: PanelContext) {
         : CARS[m.slots[i]!.type].role === 'offense' ? '相邻增益或减益车可辅助武器' : '辅助之间暂无联动，请搭配武器';
     d.label(caption, -159, y - (selectedCar ? 11 : 14), 20, recipe ? known ? P.teal : P.gold : P.muted, 425, 'left');
   }
-  if (m.pendingCar) d.button('放弃这节车厢', 0, -303, 566, 66, c.actions.discardOffer, false);
-  else d.button(`带着 ${links.length} 条联动出发  →`, 0, -303, 566, 66, c.actions.resumeWorkshop);
-  d.button(`联动图鉴   ${c.knownRecipes.size} / ${RECIPES.length}`, 0, -375, 566, 56,
-    () => c.actions.setAtlas(true, 0), false);
+  if (m.pendingCar) {
+    if (c.selectedSlot >= 0) {
+      const command = !selectedCar ? '装入新车' : hasSpace ? '插入新车' : '替换旧车';
+      d.button(command, canMerge ? -146 : 0, -303, canMerge ? 272 : 566, 66, c.actions.installPending, !canMerge);
+      if (canMerge) d.button('合并升级', 146, -303, 272, 66, c.actions.mergePending);
+    }
+    d.button('放弃这节车厢', -146, -383, 272, 56, c.actions.discardOffer, false);
+    d.button('车厢图鉴', 146, -383, 272, 56, () => c.actions.setAtlas(true, 0, true), false);
+  } else {
+    d.button(`带着 ${links.length} 条联动出发  →`, 0, -303, 566, 66, c.actions.resumeWorkshop);
+    d.button('车厢与联动图鉴', 0, -375, 566, 56, () => c.actions.setAtlas(true, 0, true), false);
+  }
 }
 
 function atlas(c: PanelContext) {
-  const d = c.draw, pages = Math.max(1, Math.ceil(RECIPES.length / 3));
+  const d = c.draw, pages = Math.max(1, Math.ceil((c.atlasCars ? CAR_TYPES.length : RECIPES.length) / 3));
   const page = Math.max(0, Math.min(pages - 1, c.atlasPage));
-  heading(d, '联动图鉴', '战斗触发后揭晓 · 辅助与武器前后不限');
-  d.label(`已发现 ${c.knownRecipes.size} / ${RECIPES.length} 种联动`, 0, 263, 21, P.gold, 560);
-  RECIPES.slice(page * 3, page * 3 + 3).forEach((recipe, i) => {
-    const y = 173 - i * 162, known = c.knownRecipes.has(recipe.id);
+  heading(d, c.atlasCars ? '车厢图鉴' : '联动图鉴', c.atlasCars ? '8 种车厢 · 进攻 / 增益 / 减益' : `已发现 ${c.knownRecipes.size} / ${RECIPES.length} 种联动`);
+  d.button('车厢', -146, 255, 272, 48, () => c.actions.setAtlas(true, 0, true), c.atlasCars);
+  d.button('联动', 146, 255, 272, 48, () => c.actions.setAtlas(true, 0, false), !c.atlasCars);
+  if (c.atlasCars) CAR_TYPES.slice(page * 3, page * 3 + 3).forEach((type, i) => {
+    const y = 145 - i * 153, car = CARS[type];
+    inset(d, -284, y - 67, 568, 138);
+    d.cardIcon(type, -218, y + 5, 110);
+    d.label(car.name, -140, y + 41, 29, P.cream, 274, 'left', 'display');
+    badge(d, ROLE_NAMES[car.role], 222, y + 40, 86, ROLE_COLOR[car.role]);
+    d.label(car.description, -140, y - 13, 20, P.muted, 399, 'left');
+  });
+  else RECIPES.slice(page * 3, page * 3 + 3).forEach((recipe, i) => {
+    const y = 145 - i * 153, known = c.knownRecipes.has(recipe.id);
     const support = recipe.a === recipe.executor ? recipe.b : recipe.a;
     inset(d, -284, y - 72, 568, 148, known ? '#526779AC' : '#655167B0');
     brush(d, -237, y + 37, 79, 63, '#B5C6C125');
@@ -236,11 +257,12 @@ function atlas(c: PanelContext) {
 function supply(c: PanelContext) {
   const d = c.draw, m = c.model;
   const hasSpace = m.slots.some(car => !car);
-  heading(d, '废料补给', hasSpace ? '三选一 · 插入新车，已有车厢全部保留' : '三选一 · 五槽已满，新车需替换一节旧车');
+  heading(d, '废料补给', hasSpace ? '三选一 · 插入新车 / 同车合并 / 改装' : '三选一 · 同车合并 / 改装 / 维修');
   m.offers.forEach((offer, i) => {
-    const y = 180 - i * 185, isCar = offer.kind === 'car';
-    const data = isCar ? CARS[offer.id as CarType] : MODS[offer.id as ModId];
-    const color = isCar ? ROLE_COLOR[CARS[offer.id as CarType].role] : P.gold;
+    const y = 180 - i * 185, isCar = offer.kind === 'car', isRepair = offer.kind === 'repair';
+    const heal = Math.min(m.maxHp - m.hp, offer.amount ?? m.repairAmount);
+    const data = isRepair ? {name:'应急维修', description:`装甲恢复 ${heal} 点，最高恢复至 ${m.maxHp}。`} : isCar ? CARS[offer.id as CarType] : MODS[offer.id as ModId];
+    const color = isRepair ? P.teal : isCar ? ROLE_COLOR[CARS[offer.id as CarType].role] : P.gold;
     inset(d, -284, y - 80, 568, 168, '#55485CA6');
     brush(d, -207, y + 14, 137, 109, '#CBA79539');
     if (isCar) roleMark(d, CARS[offer.id as CarType].role, -257, y + 58, 13, color);
@@ -249,12 +271,13 @@ function supply(c: PanelContext) {
     if (isCar) d.cardIcon(offer.id as CarType, -207, y + 17, 124);
     else {
       brush(d, -207, y + 17, 77, 63, '#C8A69B44');
-      d.label('改', -207, y + 17, 36, P.cream, 85, 'center', 'display');
+      if (isRepair) roleMark(d, 'buff', -207, y + 17, 33, P.teal);
+      else d.label('改', -207, y + 17, 36, P.cream, 85, 'center', 'display');
     }
-    badge(d, isCar ? `${ROLE_NAMES[CARS[offer.id as CarType].role]}车厢` : '改装词条', -207, y - 56, 122, color);
+    badge(d, isRepair ? '维修补给' : isCar ? `${ROLE_NAMES[CARS[offer.id as CarType].role]}车厢` : '改装词条', -207, y - 56, 122, color);
     d.label(data.name, -111, y + 47, 32, P.cream, 327, 'left', 'display');
     d.label(data.description, -111, y + 1, 20, P.muted, 369, 'left');
-    d.label(isCar ? hasSpace ? '领取车厢 · 选择插入位置' : '领取车厢 · 选择替换旧车' : '领取词条 · 强化配置', -111, y - 53, 20, P.teal, 334, 'left');
+    d.label(isRepair ? `装甲 ${m.hp} → ${m.hp + heal}` : isCar ? '领取车厢 · 安装或同车合并' : '领取词条 · 强化配置', -111, y - 53, 20, P.teal, 334, 'left');
     d.line([238, y - 53, 262, y - 53], P.teal, 1.5);
     d.line([254, y - 47, 262, y - 53, 254, y - 59], P.teal, 1.5);
     d.addHitArea(0, y + 4, 568, 168, () => c.actions.chooseOffer(i));

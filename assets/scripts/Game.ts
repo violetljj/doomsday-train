@@ -32,7 +32,7 @@ export class Game extends Component {
   private debugSpeed = 1;
   private carArt = new Map<number,Node>();
   private selectedSlot = -1;
-  private atlas = false; private atlasPage = 0;
+  private atlas = false; private atlasPage = 0; private atlasCars = true;
   private knownRecipes = new Set<string>(); private newRecipes = new Set<string>();
   private carIcons = new Map<CarType,SpriteFrame>();
   private weaponFrames = new Map<CarType,SpriteFrame>();
@@ -259,7 +259,10 @@ export class Game extends Component {
   private begin() {
     this.unlockAudio();this.model.start(this.seed++,true);this.particles=[];this.chain=0;this.chainLife=0;
     this.entranceRemaining=1;
+    this.visualTime=0;this.shake=0;this.emberClock=0;
     this.supportEffects=[];this.selectedSlot=-1;this.atlas=false;this.newRecipes.clear();
+    for(const n of this.enemySprites.values())n.destroy();this.enemySprites.clear();
+    for(const n of this.fxPool)n.active=false;this.fxUsed=0;
     for(const n of this.carArt.values())n.destroy();this.carArt.clear();
     for(const n of this.weaponSprites.values())n.destroy();this.weaponSprites.clear();
     for(const d of this.defeated)d.node.destroy();this.defeated=[];
@@ -351,12 +354,14 @@ export class Game extends Component {
       }
       const visualKind=e.type==='focused-flame'&&e.recipeId==='flame-prism'?'prismbeam':({fan:'wind','focused-flame':'beam','burning-arc':'tesla',conduction:'tesla',
         'burn-blast':'blast',thermal:'thermalburst',blizzard:'cryo',shatter:'iceblast'} as Record<string,string>)[e.type]||e.type;
-      if(['tesla','cryo','wind','beam','prismbeam','blast','thermalburst','slam','iceblast','burn','acid','prism','regen','shield','brood'].includes(visualKind)){
-        const life=e.type==='tesla'?.24:e.type==='repair'?.8:.5;
+      if(['tesla','cryo','wind','beam','prismbeam','blast','thermalburst','slam','iceblast','burn','acid','prism','regen','shield','brood','repair','cannon-impact'].includes(visualKind)){
+        const life=e.type==='tesla'?.24:e.type==='repair'?.8:e.type==='cannon-impact'?.38:.5;
         this.supportEffects.push({type:visualKind,x:e.x,y:e.y,dx:e.dx??0,dy:e.dy??0,size:e.size,life,max:life});
         if(this.supportEffects.length>32)this.supportEffects.shift();
         if(e.type==='slam'){this.shake=9;this.tone(55,.25,'triangle');this.toast('首领冲击 · 护住列车');}
         if(e.type==='tesla')this.tone(320,.055,'triangle');
+        if(e.type==='repair'){this.toast(`应急维修 · 装甲 +${e.size}`);this.tone(520,.22);}
+        if(e.type==='cannon-impact'){this.shake=Math.max(this.shake,2);this.tone(75,.09,'triangle');}
         continue;
       }
       if(e.type==='boss'){this.toast('精英破阵者 · 击破后继续前进');this.tone(95,.4,'triangle');continue;}
@@ -403,7 +408,7 @@ export class Game extends Component {
     this.fxUsed=0;
     this.drawGround();this.drawWorld();this.drawEffects();this.drawHUD();
     for(let i=this.fxUsed;i<this.fxPool.length;i++)this.fxPool[i].active=false;
-    const nextState=`${this.model.phase}:${this.model.revision}:${this.selectedSlot}:${this.atlas}:${this.atlasPage}:${this.knownRecipes.size}`;
+    const nextState=`${this.model.phase}:${this.model.revision}:${this.selectedSlot}:${this.atlas}:${this.atlasPage}:${this.atlasCars}:${this.knownRecipes.size}`;
     if(this.state!==nextState){this.state=nextState;this.drawPanel();}
   }
   private drawGround() {
@@ -491,10 +496,11 @@ export class Game extends Component {
         }
         else if(car.type==='cannon'||car.type==='rail'){
           const mx=Math.cos(angle)*53,my=y+Math.sin(angle)*53;
-          this.artEffect(5,mx,my,56,56,angle*180/Math.PI,car.flash/.15);
+          const rail=car.type==='rail';
+          this.artEffect(5,mx,my,rail?94:64,rail?20:58,angle*180/Math.PI,car.flash/.15,rail?'#B9EBEC':'#EDB080');
         }
       }
-      if(car.level>0)for(let j=0;j<car.level;j++)this.circle(d,-31+j*10,y-39,3,C.gold);
+      if(car.level>0)for(let j=0;j<Math.min(7,car.level);j++)this.circle(d,-31+j*10,y-39,3,C.gold);
     });
     for(const link of m.links){
       const y=(this.slotY[link.index]+this.slotY[link.index+1])/2;
@@ -512,6 +518,24 @@ export class Game extends Component {
       const trail=p.kind==='pierce'?54:p.kind==='shatter'?32:22;
       const angle=Math.atan2(p.dy,p.dx)*180/Math.PI;
       const dx=p.dx/length,dy=p.dy/length;
+      if(p.kind==='pierce'){
+        this.artEffect(0,p.x-dx*58,p.y-dy*58,156,13,angle,.8,'#B3DEEA');
+        this.line(a,[p.x-dx*112,p.y-dy*112,p.x+dx*7,p.y+dy*7],'#A8DADE66',5);
+        this.line(a,[p.x-dx*70,p.y-dy*70,p.x+dx*7,p.y+dy*7],'#EFF4E5',1.8);
+        for(const side of[-1,1])this.line(a,[p.x-dx*76-dy*side*5,p.y-dy*76+dx*side*5,p.x-dx*32-dy*side*4,p.y-dy*32+dx*side*4],'#C0B2DB88',1);
+        continue;
+      }
+      if(p.kind==='cannon'){
+        this.artEffect(0,p.x-dx*10,p.y-dy*10,33,26,angle,.9,color);
+        for(let j=1;j<=3;j++){
+          const drift=Math.sin(p.id+j)*j*1.7,tail=j*10;
+          this.line(a,[p.x-dx*tail-dy*drift,p.y-dy*tail+dx*drift,p.x-dx*(tail+5)-dy*drift,p.y-dy*(tail+5)+dx*drift],j===1?'#E6B99DBB':'#BC9DA45A',6-j);
+        }
+        const r=Math.max(5,p.radius);
+        this.polygon(a,[p.x+dx*r,p.y+dy*r,p.x-dy*r*.7,p.y+dx*r*.7,p.x-dx*r,p.y-dy*r,p.x+dy*r*.65,p.y-dx*r*.65],'#E6B99D');
+        this.line(a,[p.x+dx*r*.6,p.y+dy*r*.6,p.x-dy*r*.4,p.y+dx*r*.4],'#FFF0CA',3);
+        continue;
+      }
       for(let j=1;j<=4;j++){
         const tail=j*11,wave=Math.sin(this.visualTime*32+p.id+j)*j*.6;
         this.line(a,[p.x-dx*tail-dy*wave,p.y-dy*tail+dx*wave,p.x-dx*(tail+7)-dy*wave,p.y-dy*(tail+7)+dx*wave],color+(j<3?'99':'44'),Math.max(1,4-j));
@@ -712,7 +736,22 @@ export class Game extends Component {
     const g=this.fx;g.clear();
     for(const e of this.supportEffects){
       const t=1-e.life/e.max;
-      if(e.type==='feed'){
+      if(e.type==='cannon-impact'){
+        const grow=1-Math.pow(1-t,3),r=e.size*grow;
+        this.artEffect(5,e.x,e.y,30+e.size*1.7*grow,24+e.size*1.5*grow,t*17,(1-t)*.85,'#EDB080');
+        for(let j=0;j<7;j++){
+          const q=j*Math.PI*2/7+e.x*.03,spread=r*(.8+(j%3)*.12);
+          const x=e.x+Math.cos(q)*spread,y=e.y+Math.sin(q)*spread;
+          this.ribbon(g,x,y,q+Math.PI/2,7+12*grow,3*(1-t),j,'#D5AB8E88');
+          this.line(g,[e.x+Math.cos(q)*r*.5,e.y+Math.sin(q)*r*.5,x,y],'#EAC9A7AA',2*(1-t)+.5);
+        }
+      }else if(e.type==='repair'){
+        for(const y of this.slotY)for(let j=0;j<3;j++){
+          const u=(t+j/3)%1,x=-44+j*44,py=y-30+u*80,alpha=Math.round(Math.sin(Math.PI*u)*(1-t)*210).toString(16).padStart(2,'0');
+          this.line(g,[x-5,py,x+5,py],'#A8DADE'+alpha,3);
+          this.line(g,[x,py-5,x,py+5],'#A8DADE'+alpha,3);
+        }
+      }else if(e.type==='feed'){
         const color=e.color||C.teal,travel=Math.min(1,t*3.5),side=e.dy>0?-56:56,points:number[]=[];
         for(let j=0;j<=16;j++){
           const u=j/16;points.push(e.x+Math.sin(Math.PI*u)*side,e.y+e.dy*u);
@@ -835,7 +874,7 @@ export class Game extends Component {
   }
   private slotClick(index:number) {
     const m=this.model;
-    if(m.pendingCar){if(m.install(index))this.selectedSlot=-1;return;}
+    if(m.pendingCar){this.selectedSlot=index;return;}
     if(this.selectedSlot<0){this.selectedSlot=index;return;}
     if(this.selectedSlot!==index)m.swapSlots(this.selectedSlot,index);
     this.selectedSlot=-1;
@@ -863,7 +902,7 @@ export class Game extends Component {
       return;
     }
     renderPanel({model:m,knownRecipes:this.knownRecipes,newRecipes:this.newRecipes,
-      atlas:this.atlas,atlasPage:this.atlasPage,selectedSlot:this.selectedSlot,
+      atlas:this.atlas,atlasPage:this.atlasPage,atlasCars:this.atlasCars,selectedSlot:this.selectedSlot,
       draw:{
         rect:(x,y,w,h,color,radius)=>this.paintRect(g,x,y,w,h,color),
         label:(text,x,y,size,color,width,align,font)=>{this.label(this.overlayNode,text,x,y,size,color,width,align,font);},
@@ -876,7 +915,9 @@ export class Game extends Component {
       },actions:{
         begin:()=>this.begin(),selectSlot:i=>this.slotClick(i),
         openWorkshop:()=>this.openWorkshop(),
-        setAtlas:(open,page)=>{this.atlas=open;this.atlasPage=page;},
+        setAtlas:(open,page,cars)=>{this.atlas=open;this.atlasPage=page;if(cars!==undefined)this.atlasCars=cars;},
+        installPending:()=>{if(m.install(this.selectedSlot))this.selectedSlot=-1;},
+        mergePending:()=>{if(m.mergePending(this.selectedSlot)){this.selectedSlot=-1;this.toast('同车合并 · 强化升级');}},
         chooseOffer:i=>{this.selectedSlot=-1;this.atlas=false;m.chooseOffer(i);},
         discardOffer:()=>{m.discardOffer();this.selectedSlot=-1;},
         resumeWorkshop:()=>{this.selectedSlot=-1;m.resumeWorkshop();},
@@ -884,7 +925,7 @@ export class Game extends Component {
       }
     });
     if(m.phase==='win'||m.phase==='lose')try{
-      globalThis.localStorage?.setItem('doomsday-last-run',JSON.stringify({version:'0.5.0',wave:m.wave,seed:m.initialSeed,
+      globalThis.localStorage?.setItem('doomsday-last-run',JSON.stringify({version:'0.5.1',wave:m.wave,seed:m.initialSeed,
         slots:m.slots.map(c=>c?{type:c.type,level:c.level}:null),links:m.links.map(l=>l.recipe.id),
         hp:m.hp,kills:m.kills,time:m.time,result:m.phase,reason:m.endReason,events:m.events}));
     }catch{}

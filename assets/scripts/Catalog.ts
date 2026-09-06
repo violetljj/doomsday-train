@@ -3,12 +3,12 @@ export type CarRole = 'offense' | 'buff' | 'debuff';
 export const ROLE_NAMES: Record<CarRole, string> = { offense: '进攻', buff: '增益', debuff: '减益' };
 export const CAR_TYPES: CarType[] = ['cannon', 'flame', 'fan', 'tesla', 'cryo', 'rail', 'prism', 'acid'];
 export const CARS: Record<CarType, { name: string; description: string; color: string; role: CarRole }> = {
-  cannon: { name: '火炮车', description: '发射实体炮弹；相邻辅助车可强化火炮。', color: '#FFC571', role: 'offense' },
+  cannon: { name: '火炮车', description: '发射缓速重型爆炸炮弹；命中后波及半径45内敌人。', color: '#FFC571', role: 'offense' },
   flame: { name: '喷火车', description: '持续喷射扇形火焰；相邻辅助车可强化喷火。', color: '#FF814E', role: 'offense' },
   fan: { name: '风扇车', description: '独立推开普通敌人，并为两侧相邻攻击车输送气流。', color: '#85E1CA', role: 'buff' },
   tesla: { name: '电弧车', description: '自动电击最近的三个目标；相邻辅助车可强化电弧。', color: '#C2AAFF', role: 'offense' },
   cryo: { name: '冰霜车', description: '独立造成低额冰伤并减速普通敌人，为相邻攻击车附加冰霜效果。', color: '#83D8FF', role: 'debuff' },
-  rail: { name: '轨道炮车', description: '发射贯穿直线敌群的高速轨道弹。', color: '#D6B99D', role: 'offense' },
+  rail: { name: '轨道炮车', description: '发射高速细长的贯穿轨道弹，直线穿透敌群。', color: '#D6B99D', role: 'offense' },
   prism: { name: '棱镜车', description: '零伤害折光脉冲，为相邻进攻车分裂攻击。', color: '#EDB6ED', role: 'buff' },
   acid: { name: '蚀酸车', description: '低额酸伤并腐蚀敌人，削弱护盾与元素抗性。', color: '#B6D879', role: 'debuff' },
 };

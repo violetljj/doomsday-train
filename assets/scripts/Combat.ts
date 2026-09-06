@@ -4,7 +4,7 @@ import type { CarType, ModId, Recipe } from './Catalog.ts';
 export type Phase = 'menu' | 'combat' | 'supply' | 'workshop' | 'paused' | 'win' | 'lose';
 export type DamageType = 'physical' | 'fire' | 'electric' | 'ice' | 'acid';
 export interface Car { id: number; type: CarType; angle: number; previousAngle: number; flash: number; level: number; mods: Partial<Record<ModId, number>>; }
-export interface Offer { kind: 'car' | 'mod'; id: CarType | ModId; }
+export interface Offer { kind: 'car' | 'mod' | 'repair'; id: CarType | ModId | 'repair'; amount?: number; }
 export interface Enemy { id: number; x: number; y: number; hp: number; maxHp: number; speed: number; kind: number; flash: number; slow?: number; freeze?: number; armorBreak?: number; burn?: number; burnDamage?: number; burnClock?: number; corrosion?: number; barrier?: number; regenClock?: number; }
 export interface Effect { type: string; x: number; y: number; size: number; dx?: number; dy?: number; enemyKind?: number; recipeId?: string; carSlot?: number; }
 export interface Vortex { id: number; x: number; y: number; dx: number; dy: number; life: number; maxLife: number; age: number; radius: number; tick: number; damage: number; kind: 'fire' | 'electric'; element: 'fire' | 'electric'; recipeId?: string; carSlot?: number; }
@@ -31,6 +31,10 @@ export class Combat {
   private carClocks = new Map<number, CarClock>(); private linkClocks = new Map<string, number>();
 
   get wave() { return 1 + Math.floor((this.time + 1e-8) / 20); }
+  /** Supply repair amount, exposed so presentation can state the exact recovery. */
+  get repairAmount() { return 30; }
+  get bossAttackInterval() { return 6; }
+  get bossAttackDamage() { return Math.min(16, 8 + 2 * Math.max(0, this.wave - 3)); }
   get boss(): Enemy | null { return this.enemies.find(e => e.kind === 3 && e.hp > 0) || null; }
   get links(): { index: number; recipe: Recipe; driver: number; support: number }[] {
     const result: { index: number; recipe: Recipe; driver: number; support: number }[] = [];
@@ -125,6 +129,18 @@ export class Combat {
     if (this.phase !== 'workshop' || !this.pendingCar) return false;
     this.pendingCar = null; this.revision++; return true;
   }
+  /** Consume the pending duplicate and improve the selected existing car without replacing its identity or state. */
+  mergePending(index: number): boolean {
+    if (this.phase !== 'workshop' || !this.pendingCar || !this.validSlot(index)) return false;
+    const car = this.slots[index];
+    if (!car || car.type !== this.pendingCar) return false;
+    car.level++;
+    car.mods[this.numericModFor(car.type)] = car.level;
+    this.pendingCar = null;
+    this.effects.push({ type: 'upgrade', x: 0, y: SLOT_Y[index], size: 85, carSlot: index });
+    this.events.push({ type: 'car_merged', time: this.time, value: `${index}:${car.type}:${car.level}` });
+    this.syncStructure(); return true;
+  }
   resumeWorkshop(): boolean {
     if (this.phase !== 'workshop' || this.pendingCar) return false;
     this.phase = 'combat'; this.freezeInterpolation(); this.revision++; return true;
@@ -132,21 +148,41 @@ export class Combat {
   private availableMods(): ModId[] {
     return (Object.keys(MODS) as ModId[]).filter(id => {
       const target = MODS[id].target;
-      return target === 'links' ? this.links.length > 0 && this.linkLevel < 2 : this.slots.some(car => car && car.type === target && (MODS[id].mode ? (car.mods[id] || 0) < 2 : car.level < 2));
+      return target === 'links' ? this.links.length > 0 : this.slots.some(car => car && car.type === target && (!MODS[id].mode || (car.mods[id] || 0) < 2));
     });
   }
+  private numericModFor(type: CarType): ModId {
+    return ({ cannon: 'caliber', flame: 'fuel', fan: 'pressure', tesla: 'voltage', cryo: 'coolant', rail: 'railpower', prism: 'prismfocus', acid: 'acidpotency' } as Record<CarType, ModId>)[type];
+  }
   private supply() {
-    let cars: CarType[];
-    if (this.supplyCount === 0) cars = ['fan', 'cryo', this.shuffle(CAR_TYPES.filter(t => CARS[t].role === 'offense'))[0]];
-    else {
-      const offense = this.shuffle(CAR_TYPES.filter(t => CARS[t].role === 'offense'))[0];
-      const support = this.shuffle(CAR_TYPES.filter(t => CARS[t].role !== 'offense'))[0];
-      cars = [offense, support, this.shuffle(CAR_TYPES.filter(t => t !== offense && t !== support))[0]];
-    }
-    this.offers = cars.map(id => ({ kind: 'car', id }));
-    if (this.supplyCount >= SLOT_Y.length - 1) {
-      const mods = this.availableMods();
-      if (mods.length) this.offers[2] = { kind: 'mod', id: mods[Math.floor(this.random() * mods.length)] };
+    const mods = this.shuffle(this.availableMods());
+    const full = this.slots.every(Boolean), hurt = this.hp < this.maxHp;
+    const repair = (): Offer => ({ kind: 'repair', id: 'repair', amount: Math.min(this.repairAmount, this.maxHp - this.hp) });
+    const offense = this.shuffle(CAR_TYPES.filter(t => CARS[t].role === 'offense'))[0];
+    const support = this.shuffle(CAR_TYPES.filter(t => CARS[t].role !== 'offense'))[0];
+    if (full) {
+      const installed = this.slots.filter((car): car is Car => !!car).map(car => car.type);
+      const uninstalled = CAR_TYPES.filter(type => !installed.includes(type));
+      const current = this.shuffle(installed)[0];
+      const discovery = uninstalled.length ? this.shuffle(uninstalled)[0] : current;
+      const car = uninstalled.length && this.random() < 1 / 3 ? discovery : current;
+      this.offers = [{ kind: 'car', id: car }];
+      if (mods[0]) this.offers.push({ kind: 'mod', id: mods[0] });
+      if (hurt) this.offers.push(repair());
+      else if (mods[1]) this.offers.push({ kind: 'mod', id: mods[1] });
+      while (this.offers.length < 3) {
+        const fallback = this.shuffle(CAR_TYPES.filter(t => !this.offers.some(o => o.kind === 'car' && o.id === t)))[0];
+        this.offers.push({ kind: 'car', id: fallback });
+      }
+    } else if (this.supplyCount === 0) {
+      this.offers = [{ kind: 'car', id: 'fan' }, { kind: 'car', id: 'cryo' }, { kind: 'car', id: offense }];
+    } else {
+      const car = this.supplyCount % 2 ? offense : support;
+      this.offers = [{ kind: 'car', id: car }];
+      if (mods[0]) this.offers.push({ kind: 'mod', id: mods[0] });
+      else this.offers.push({ kind: 'car', id: this.shuffle(CAR_TYPES.filter(t => t !== car))[0] });
+      if (hurt) this.offers.push(repair());
+      else this.offers.push({ kind: 'car', id: car === offense ? support : offense });
     }
     this.supplyCount++; this.nextScrap = REWARDS[this.supplyCount] ?? (170 + 60 * (this.supplyCount - REWARDS.length + 1)); this.phase = 'supply'; this.revision++;
     this.events.push({ type: 'supply_offer', time: this.time, value: String(this.supplyCount) });
@@ -157,16 +193,21 @@ export class Combat {
     if (offer.kind === 'car') {
       if (!CAR_TYPES.includes(offer.id as CarType)) return false;
       this.pendingCar = offer.id as CarType; this.phase = 'workshop';
-    } else {
+    } else if (offer.kind === 'mod') {
       const id = offer.id as ModId;
       if (!this.availableMods().includes(id)) return false;
       const target = MODS[id].target;
       if (target === 'links') this.linkLevel++;
       else for (const car of this.slots) if (car?.type === target) {
         if (MODS[id].mode) car.mods[id] = Math.min(2, (car.mods[id] || 0) + 1);
-        else { car.level = Math.min(2, car.level + 1); car.mods[id] = car.level; }
+        else { car.level++; car.mods[id] = car.level; }
       }
       this.effects.push({ type: 'upgrade', x: 0, y: -145, size: 100 }); this.phase = 'combat';
+    } else {
+      if (offer.id !== 'repair') return false;
+      const healed = Math.min(this.maxHp - this.hp, offer.amount ?? this.repairAmount);
+      this.hp += healed;
+      this.effects.push({ type: 'repair', x: 0, y: -145, size: healed }); this.phase = 'combat';
     }
     this.events.push({ type: 'offer_chosen', time: this.time, value: `${offer.kind}:${offer.id}` });
     this.offers = []; this.freezeInterpolation(); this.revision++; return true;
@@ -256,8 +297,8 @@ export class Combat {
     this.enemies = this.enemies.filter(e=>e.hp>0);
     if(!this.boss)this.bossCharge=0;
     if(this.boss) {
-      this.bossClock += dt; this.bossCharge = Math.min(1,this.bossClock/4.5);
-      if(this.bossClock>=4.5-.00001) { this.bossClock-=4.5;this.bossCharge=0;this.hp=Math.max(0,this.hp-16);this.effects.push({type:'slam',x:0,y:40,size:130});this.events.push({type:'boss_slam',time:this.time}); }
+      this.bossClock += dt; this.bossCharge = Math.min(1,this.bossClock/this.bossAttackInterval);
+      if(this.bossClock>=this.bossAttackInterval-.00001) { this.bossClock-=this.bossAttackInterval;this.bossCharge=0;this.hp=Math.max(0,this.hp-this.bossAttackDamage);this.effects.push({type:'slam',x:0,y:40,size:130});this.events.push({type:'boss_slam',time:this.time}); }
     }
     if(this.hp<=0) return this.finish('lose','armor');
     if(this.scrap>=this.nextScrap) this.supply();
@@ -407,6 +448,12 @@ export class Combat {
         if(p.kind==='burn-shell'){
           this.effects.push({type:'burn-blast',x:e.x,y:e.y,size:85,recipeId:p.recipeId,carSlot:p.carSlot});
           for(const other of this.enemies)if(other.hp>0&&Math.hypot(other.x-e.x,other.y-e.y)<=85){this.ignite(other,p.burnDamage||4);this.hit(other,p.damage,p.element,ox,oy,p.recipeId,p.carSlot);}
+        }else if(p.kind==='cannon'){
+          this.effects.push({type:'cannon-impact',x:e.x,y:e.y,size:45,recipeId:p.recipeId,carSlot:p.carSlot});
+          for(const other of this.enemies) if(other.hp>0&&Math.hypot(other.x-e.x,other.y-e.y)<=45) {
+            if(p.corrosion) other.corrosion=p.corrosion;
+            this.hit(other,p.damage*(other.id===e.id?1:.55),p.element,ox,oy,p.recipeId,p.carSlot);
+          }
         }else{
           const frozen=(e.freeze||0)>0;if(p.kind==='magnetic')e.armorBreak=3;if(p.corrosion)e.corrosion=p.corrosion;
           this.hit(e,p.damage*(frozen?(p.frozenBonus||(p.kind==='shatter'?2:1)):1),p.element,ox,oy,p.recipeId,p.carSlot);
