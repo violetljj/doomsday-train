@@ -2,6 +2,7 @@ import { _decorator, Component, Node, Graphics, Color, UITransform, Label, Vec3,
   resources, SpriteFrame, Sprite, view, ResolutionPolicy, game, Game as EngineGame, Layers, profiler, Material, gfx, Rect, EffectAsset, Vec4, Vec2 } from 'cc';
 import { Combat, SLOT_Y } from './Combat';
 import { renderPanel } from './PanelRenderer';
+import { SlotDrag, workshopSlotAt } from './SlotDrag';
 import { CARS, RECIPES, CarType, ModId } from './Catalog';
 const { ccclass } = _decorator;
 const C = { ink: '#1D1D2E', panel: '#302D43', edge: '#625C78', gold: '#E6B99D', cream: '#F0DFD0', muted: '#B9B3C4', teal: '#A8DADE', red: '#EA937F' };
@@ -32,6 +33,10 @@ export class Game extends Component {
   private debugSpeed = 1;
   private carArt = new Map<number,Node>();
   private selectedSlot = -1;
+  private slotDrag = new SlotDrag();
+  private dragGraphics!: Graphics;
+  private dragLabel!: Label;
+  private dragIcon: Node | null = null;
   private atlas = false; private atlasPage = 0; private atlasCars = true;
   private knownRecipes = new Set<string>(); private newRecipes = new Set<string>();
   private carIcons = new Map<CarType,SpriteFrame>();
@@ -94,6 +99,11 @@ export class Game extends Component {
     this.overlayNode = new Node('Panels'); this.overlayNode.layer=Layers.Enum.UI_2D; this.node.addChild(this.overlayNode);
     this.overlayNode.addComponent(UITransform).setContentSize(720,1280);
     this.overlay = this.overlayNode.addComponent(Graphics);
+    this.dragGraphics = this.layer('Carriage drag');
+    this.dragLabel = this.label(this.dragGraphics.node, '', 0, 0, 21, C.cream, 300);
+    this.node.on(Node.EventType.TOUCH_START, this.touchStart, this);
+    this.node.on(Node.EventType.TOUCH_MOVE, this.touchMove, this);
+    this.node.on(Node.EventType.TOUCH_CANCEL, this.touchCancel, this);
     this.node.on(Node.EventType.TOUCH_END, this.touch, this);
     game.on(EngineGame.EVENT_HIDE, this.hide, this);
     try { const saved = globalThis.localStorage?.getItem('doomsday-settings'); if(saved){const v=JSON.parse(saved);this.sound=v.sound!==false;this.lowMotion=!!v.lowMotion;} } catch {}
@@ -123,6 +133,9 @@ export class Game extends Component {
         feeds:this.supportEffects.filter(e=>e.type==='feed').map(e=>({fromY:e.y,toY:e.y+e.dy,life:e.life}))}, events:this.model.events.slice() }) };
   }
   onDestroy() {
+    this.node.off(Node.EventType.TOUCH_START, this.touchStart, this);
+    this.node.off(Node.EventType.TOUCH_MOVE, this.touchMove, this);
+    this.node.off(Node.EventType.TOUCH_CANCEL, this.touchCancel, this);
     game.off(EngineGame.EVENT_HIDE, this.hide, this);
     this.node.off(Node.EventType.TOUCH_END, this.touch, this);
     this.audio?.close?.(); delete (globalThis as any).__doomsday;
@@ -131,7 +144,7 @@ export class Game extends Component {
     this.flowMaterial?.destroy();
     for(const frame of this.slicedFrames)frame.destroy();
   }
-  private hide() { this.model.pause(); }
+  private hide() { this.clearDrag(); this.model.pause(); }
   private group(name:string,parent:Node) {const n=new Node(name);n.layer=Layers.Enum.UI_2D;parent.addChild(n);n.addComponent(UITransform).setContentSize(720,1280);return n;}
   private layer(name: string, parent=this.node) { const n=new Node(name);n.layer=Layers.Enum.UI_2D;parent.addChild(n);n.addComponent(UITransform).setContentSize(720,1280);return n.addComponent(Graphics); }
   private label(parent: Node, text: string, x: number, y: number, size: number, color: string, width=600, align='center',font:'display'|'body'='body') {
@@ -306,7 +319,65 @@ export class Game extends Component {
   private openWorkshop(slot=-1) {
     if(this.model.openWorkshop()){this.selectedSlot=slot;this.atlas=false;}
   }
+  private canDrag() { return this.model.phase==='workshop'&&!this.model.pendingCar&&!this.atlas; }
+  private touchPoint(event:EventTouch) {
+    const p=event.getUILocation();
+    return this.node.getComponent(UITransform)!.convertToNodeSpaceAR(new Vec3(p.x,p.y,0));
+  }
+  private touchStart(event:EventTouch) {
+    if(!this.canDrag())return;
+    const p=this.touchPoint(event),slot=workshopSlotAt(p.x,p.y,this.model.slots.length);
+    if(slot>=0&&this.model.slots[slot])this.slotDrag.start(event.getID(),slot,p.x,p.y);
+  }
+  private touchMove(event:EventTouch) {
+    const p=this.touchPoint(event);this.slotDrag.move(event.getID(),p.x,p.y);
+  }
+  private touchCancel(event:EventTouch) { if(event.getID()===this.slotDrag.pointer)this.clearDrag(); }
+  private clearDrag() {
+    this.slotDrag.reset();this.dragGraphics?.clear();
+    if(this.dragLabel)this.dragLabel.string='';
+    this.dragIcon?.destroy();this.dragIcon=null;
+  }
+  private updateDrag(dt:number) {
+    const d=this.slotDrag,g=this.dragGraphics;
+    if(d.pointer<0)return;
+    if(!this.canDrag()){this.clearDrag();return;}
+    if(d.advance(dt)){
+      this.selectedSlot=d.source;this.tone(620,.06);
+      const car=this.model.slots[d.source]!;
+      const frame=this.weaponFrames.get(car.type)||this.carIcons.get(car.type);
+      if(frame){this.dragIcon=this.sprite('Lifted carriage',frame,86,86,g.node);this.dragIcon.getComponent(UITransform)!.setAnchorPoint(.5,.5);if(car.type==='cannon'||car.type==='flame')this.dragIcon.angle=90;}
+    }
+    g.clear();
+    if(d.cancelled)return;
+    const sourceX=(d.source-(this.model.slots.length-1)/2)*610/this.model.slots.length;
+    if(!d.active){this.line(g,[sourceX-42,235,sourceX-42+84*Math.min(1,d.elapsed/.35),235],C.teal,4);return;}
+    const target=workshopSlotAt(d.x,d.y,this.model.slots.length);
+    if(target>=0){
+      const spacing=610/this.model.slots.length,x=(target-(this.model.slots.length-1)/2)*spacing;
+      this.rect(g,x-spacing/2+5,42,spacing-10,197,'#A8DADE28',8);
+      g.strokeColor=new Color(C.teal);g.lineWidth=3;g.roundRect(x-spacing/2+5,42,spacing-10,197,8);g.stroke();
+    }
+    const x=Math.max(-290,Math.min(290,d.x)),y=Math.max(-425,Math.min(445,d.y+85));
+    this.rect(g,x-57,y-56,114,113,'#222B3AED',12);
+    if(this.dragIcon)this.dragIcon.setPosition(x,y+5,0);
+    else this.drawCarModule(g,this.model.slots[d.source]!.type,x,y,.7,Math.PI/2);
+    this.dragLabel.string=target<0?'移出槽位 · 松手取消':target===d.source?'拖到另一槽位':this.model.slots[target]?`松手交换至 ${target+1} 号位`:`松手移至 ${target+1} 号位`;
+    this.dragLabel.node.setPosition(x,y+78,0);
+  }
   private touch(event: EventTouch) {
+    const d=this.slotDrag;
+    if(d.pointer>=0){
+      if(event.getID()!==d.pointer)return;
+      this.touchMove(event);
+      const consumed=d.active||d.cancelled;
+      if(d.active&&this.canDrag()){
+        const target=workshopSlotAt(d.x,d.y,this.model.slots.length);
+        if(target>=0&&target!==d.source&&this.model.swapSlots(d.source,target)){this.selectedSlot=-1;this.tone(750,.065);}
+      }
+      this.clearDrag();
+      if(consumed)return;
+    }
     this.unlockAudio();
     const p=event.getUILocation(), local=this.node.getComponent(UITransform)!.convertToNodeSpaceAR(new Vec3(p.x,p.y,0));
     for(let i=this.hitAreas.length-1;i>=0;i--){const a=this.hitAreas[i];if(Math.abs(local.x-a.x)<=a.w/2&&Math.abs(local.y-a.y)<=a.h/2){a.action();this.tone(470,.045);return;}}
@@ -336,6 +407,7 @@ export class Game extends Component {
   }
   private toast(text:string) {this.toastText=text;this.toastLife=2.2;}
   update(dt:number) {
+    this.updateDrag(dt);
     const before=this.model.phase,realDelta=Math.min(Math.max(dt,0),.1);
     const entering=this.entranceRemaining>0;
     if(entering&&before==='combat'){

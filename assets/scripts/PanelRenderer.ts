@@ -145,8 +145,8 @@ function workshop(c: PanelContext) {
       : '辅助相邻武器 · 前后顺序不限');
   const instruction = m.pendingCar
     ? canMerge ? `同车合并：强化 ${selectedCar!.level} → ${selectedCar!.level + 1} 级，保留词条` : '选择目标槽位'
-    : c.selectedSlot >= 0 ? `已选 ${c.selectedSlot + 1} 号位 → 再点另一节车厢交换`
-      : '先点一节车厢，再点另一节交换位置';
+    : c.selectedSlot >= 0 ? `长按拖动交换 · 也可点选另一槽位`
+      : '长按车厢拖到目标槽位，松手交换';
   d.label(instruction, 0, 258, 22, c.selectedSlot >= 0 ? P.teal : P.gold, 576);
   const spacing = 610 / m.slots.length;
   d.line([-302, 146, -6, 149, 302, 146], '#B7ABAE4D', 2);
