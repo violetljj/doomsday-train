@@ -21,6 +21,7 @@ export interface PanelActions {
   chooseOffer(index: number): void;
   discardOffer(): void;
   resumeWorkshop(): void;
+  openWorkshop(): void;
   resume(): void;
   backToMenu(): void;
 }
@@ -62,8 +63,9 @@ function roleMark(d: PanelPrimitives, role: CarRole, x: number, y: number, r: nu
 }
 
 function surface(d: PanelPrimitives) {
-  d.rect(-360, -535, 720, 1080, '#151A2BCC', 0);
-  d.rect(-326, -417, 652, 830, '#302A4099', 12);
+  d.rect(-360, -535, 720, 1080, '#151A2BCF', 0);
+  d.rect(-360, 284, 720, 127, '#39304735', 0);
+  d.rect(-360, -421, 720, 169, '#20213935', 0);
   d.line([-296, 385, 217, 385, 283, 391], '#D9C6BE42', 1);
   d.line([-281, -396, -199, -386, 291, -386], '#AECFD140', 1);
   diamond(d, -298, 385, 4, P.teal);
@@ -79,8 +81,7 @@ function heading(d: PanelPrimitives, title: string, subtitle: string) {
 
 /** Light translucent sheets leave the world visible between their edges. */
 function inset(d: PanelPrimitives, x: number, y: number, w: number, h: number, color = P.tile) {
-  d.rect(x + 3, y - 4, w - 6, h, '#15172745', 6);
-  d.rect(x, y, w, h, color, 6);
+  d.rect(x, y, w, h, color, 3);
   d.line([x + 5, y + h - 17, x + 18, y + h - 4, x + w - 24, y + h - 4], P.edge, 1);
   d.line([x + 23, y + 4, x + w - 18, y + 4, x + w - 5, y + 17], P.edge, 1);
 }
@@ -116,35 +117,42 @@ function menu(c: PanelContext) {
 }
 
 function workshop(c: PanelContext) {
-  const d = c.draw, m = c.model, links = m.links;
-  heading(d, '列车工坊', '辅助相邻武器 · 前后顺序不限');
-  const instruction = m.pendingCar ? `待装 ${CARS[m.pendingCar].name} · 点槽位装入或替换`
-    : c.selectedSlot >= 0 ? `已选 ${c.selectedSlot + 1} 号位 · 再点一节车厢交换`
-      : '点两节车厢交换位置，空槽也可交换';
-  d.label(instruction, 0, 258, 21, P.gold, 576);
+  const d = c.draw, m = c.model, links = m.links, hasSpace = m.slots.some(car => !car);
+  heading(d, '列车工坊', m.pendingCar
+    ? `待装 ${CARS[m.pendingCar].name} · ${hasSpace ? '未满插入，保留旧车' : '五槽已满，选择替换'}`
+    : '辅助相邻武器 · 前后顺序不限');
+  const instruction = m.pendingCar
+    ? hasSpace ? '点旧车位置插入，或点空槽直接装入' : '点一节旧车，用新车替换它'
+    : c.selectedSlot >= 0 ? `已选 ${c.selectedSlot + 1} 号位 → 再点另一节车厢交换`
+      : '先点一节车厢，再点另一节交换位置';
+  d.label(instruction, 0, 258, 22, c.selectedSlot >= 0 ? P.teal : P.gold, 576);
   const spacing = 610 / m.slots.length;
   d.line([-302, 147, 302, 147], P.edge, 1);
   d.line([-302, 157, 302, 157], P.edge, 1);
   m.slots.forEach((car, i) => {
     const x = (i - (m.slots.length - 1) / 2) * spacing, selected = c.selectedSlot === i;
     const width = spacing - 10, lift = selected ? 6 : 0;
-    inset(d, x - width / 2, 46 + lift, width, 187, selected ? '#536472AF' : car ? '#363248AD' : '#272A3D88');
+    inset(d, x - width / 2, 46 + lift, width, 187, selected ? '#53647299' : car ? '#36324877' : '#272A3D55');
     if (selected) {
       d.line([x - width / 2 + 4, 218 + lift, x - width / 2 + 4, 229 + lift, x + width / 2 - 4, 229 + lift], P.teal, 1.5);
-      diamond(d, x, 43 + lift, 5, P.teal);
+      d.line([x - 24, 43 + lift, x + 24, 43 + lift], P.teal, 1.5);
+      d.line([x - 17, 48 + lift, x - 24, 43 + lift, x - 17, 38 + lift], P.teal, 1.5);
+      d.line([x + 17, 48 + lift, x + 24, 43 + lift, x + 17, 38 + lift], P.teal, 1.5);
     }
     if (car) {
       const data = CARS[car.type];
       badge(d, `${i + 1} ${ROLE_NAMES[data.role]}`, x, 207 + lift, width - 8, ROLE_COLOR[data.role], 20);
       d.cardIcon(car.type, x, 146 + lift, 99);
       d.label(data.name, x, 87 + lift, 23, P.cream, width - 6, 'center', 'display');
-      d.label(car.level ? `改装 ${car.level} 级` : '基础车厢', x, 61 + lift, 20, P.muted, width - 6);
+      const state = m.pendingCar ? hasSpace ? '此处插入' : '此车替换'
+        : selected ? '已选中' : c.selectedSlot >= 0 ? '点此交换' : car.level ? `改装 ${car.level} 级` : '基础车厢';
+      d.label(state, x, 61 + lift, 20, selected || c.selectedSlot >= 0 ? P.teal : P.muted, width - 6);
     } else {
       badge(d, `${i + 1} 空槽`, x, 207 + lift, width - 8, P.paper, 20);
       diamond(d, x, 145 + lift, 28, P.edge);
       d.line([x - 13, 145 + lift, x + 13, 145 + lift], P.muted, 3);
       d.line([x, 132 + lift, x, 158 + lift], P.muted, 3);
-      d.label(m.pendingCar ? '点此装入' : '等待装入', x, 91 + lift, 20, P.muted, width - 6);
+      d.label(m.pendingCar ? '点此装入' : c.selectedSlot >= 0 ? '交换到此' : '空槽可交换', x, 91 + lift, 20, P.muted, width - 6);
     }
     d.addHitArea(x, 139, width, 187, () => c.actions.selectSlot(i));
   });
@@ -203,12 +211,13 @@ function atlas(c: PanelContext) {
 
 function supply(c: PanelContext) {
   const d = c.draw, m = c.model;
-  heading(d, '废料补给', '三选一 · 新车可装入空位或替换旧车');
+  const hasSpace = m.slots.some(car => !car);
+  heading(d, '废料补给', hasSpace ? '三选一 · 插入新车，已有车厢全部保留' : '三选一 · 五槽已满，新车需替换一节旧车');
   m.offers.forEach((offer, i) => {
     const y = 180 - i * 185, isCar = offer.kind === 'car';
     const data = isCar ? CARS[offer.id as CarType] : MODS[offer.id as ModId];
     const color = isCar ? ROLE_COLOR[CARS[offer.id as CarType].role] : P.gold;
-    inset(d, -284, y - 80, 568, 168, '#38364DAA');
+    inset(d, -284, y - 80, 568, 168, '#38364D77');
     d.line([-137, y - 61, -131, y + 62], P.edge, 1);
     if (isCar) roleMark(d, CARS[offer.id as CarType].role, -257, y + 58, 13, color);
     d.label(`0${i + 1}`, 246, y + 60, 23, P.muted, 55);
@@ -221,7 +230,7 @@ function supply(c: PanelContext) {
     badge(d, isCar ? `${ROLE_NAMES[CARS[offer.id as CarType].role]}车厢` : '改装词条', -207, y - 56, 122, color);
     d.label(data.name, -111, y + 47, 32, P.cream, 327, 'left', 'display');
     d.label(data.description, -111, y + 1, 20, P.muted, 369, 'left');
-    d.label(isCar ? '领取车厢 · 安排槽位' : '领取词条 · 强化配置', -111, y - 53, 20, P.teal, 334, 'left');
+    d.label(isCar ? hasSpace ? '领取车厢 · 选择插入位置' : '领取车厢 · 选择替换旧车' : '领取词条 · 强化配置', -111, y - 53, 20, P.teal, 334, 'left');
     d.line([238, y - 53, 262, y - 53], P.teal, 1.5);
     d.line([254, y - 47, 262, y - 53, 254, y - 59], P.teal, 1.5);
     d.addHitArea(0, y + 4, 568, 168, () => c.actions.chooseOffer(i));
@@ -231,14 +240,17 @@ function supply(c: PanelContext) {
 }
 
 function pause(c: PanelContext) {
-  const d = c.draw;
+  const d = c.draw, awaitingSupply = c.model.previous === 'supply';
   diamond(d, 0, 211, 68, P.edge);
   d.line([-15, 188, -15, 234], P.cream, 4);
   d.line([15, 188, 15, 234], P.cream, 4);
   d.label('列车已暂停', 0, 100, 44, P.cream, 560, 'center', 'display');
-  d.label('准备好了，再一起冲出去', 0, 42, 23, P.muted, 560);
-  d.button('继续前进  →', 0, -81, 566, 78, c.actions.resume);
-  d.button('重新发车', 0, -177, 566, 66, c.actions.begin, false);
+  d.label(awaitingSupply ? '补给还在等待，选好再出发' : '重新安排车厢，让火力彼此照应', 0, 42, 23, P.muted, 560);
+  d.button(awaitingSupply ? '返回补给  →' : '继续前进  →', 0, -51, 566, 76, c.actions.resume);
+  if (awaitingSupply) d.label('领取补给后，可进入工坊调整车序', 0, -151, 22, P.muted, 560);
+  else d.button(c.model.pendingCar ? '安排新车  →' : '调整车序  ↔', 0, -151, 566, 72, c.actions.openWorkshop);
+  d.button('重新发车', 0, -251, 566, 64, c.actions.begin, false);
+  d.label(awaitingSupply ? '领取补给前战斗保持暂停' : '调整期间战斗保持暂停', 0, -317, 20, P.muted, 560);
 }
 
 function results(c: PanelContext) {
@@ -260,9 +272,18 @@ function results(c: PanelContext) {
       d.label(CARS[car.type].name, x, -48, 22, P.cream, spacing - 14, 'center', 'display');
     } else d.label('空槽', x, -4, 21, P.muted, spacing - 14);
   });
-  d.label(`本局新发现 ${c.newRecipes.size} 种联动`, 0, -121, 24, P.gold, 560);
-  const names = m.links.map(link => c.knownRecipes.has(link.recipe.id) ? link.recipe.name : '未知联动');
-  d.label(names.join(' / ') || '本局没有相邻联动', 0, -165, 20, P.muted, 562);
+  const triggered = RECIPES.filter(recipe => m.seenRecipes.has(recipe.id));
+  const counts = new Map<string, number>();
+  for (const link of m.links) counts.set(link.recipe.id, (counts.get(link.recipe.id) || 0) + 1);
+  const formation = RECIPES.filter(recipe => counts.has(recipe.id)).map(recipe => {
+    const name = c.knownRecipes.has(recipe.id) || m.seenRecipes.has(recipe.id) ? recipe.name : '未知联动';
+    const count = counts.get(recipe.id)!;
+    return count > 1 ? `${name} ×${count}` : name;
+  });
+  d.label(`本局触发 ${triggered.length} 种 · 新发现 ${c.newRecipes.size} 种`, 0, -109, 24, P.teal, 560);
+  d.label(triggered.length ? triggered.map(recipe => recipe.name).join(' / ') : '尚未触发联动，试着让辅助靠近武器',
+    0, -151, 20, P.cream, 562);
+  d.label(`终局编组 · ${formation.join(' / ') || '各车独立工作'}`, 0, -206, 20, P.muted, 562);
   d.button('再组一列  →', 0, -276, 566, 76, c.actions.begin);
   d.button('返回车库', 0, -366, 566, 64, c.actions.backToMenu, false);
 }

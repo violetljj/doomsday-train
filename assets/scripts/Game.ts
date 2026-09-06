@@ -1,5 +1,5 @@
 import { _decorator, Component, Node, Graphics, Color, UITransform, Label, Vec3, EventTouch,
-  resources, SpriteFrame, Sprite, view, ResolutionPolicy, game, Game as EngineGame, Layers, profiler, Material, gfx, Rect, EffectAsset } from 'cc';
+  resources, SpriteFrame, Sprite, view, ResolutionPolicy, game, Game as EngineGame, Layers, profiler, Material, gfx, Rect, EffectAsset, Vec4 } from 'cc';
 import { Combat, SLOT_Y } from './Combat';
 import { renderPanel } from './PanelRenderer';
 import { CARS, RECIPES, CarType } from './Catalog';
@@ -49,6 +49,8 @@ export class Game extends Component {
   private fxFrames:SpriteFrame[]=[];
   private fxPool:Node[]=[];
   private fxUsed=0;
+  private flowMaterial:Material|null=null;
+  private flowParams=new Vec4(0,1,0,0);
   private readonly slotY = SLOT_Y;
   private readonly combatOffset=-(SLOT_Y[0]+SLOT_Y[SLOT_Y.length-1])/2;
   private entranceRemaining=0;
@@ -76,6 +78,7 @@ export class Game extends Component {
     this.labels.stage = this.label(this.node, '', 0, 415, 22, C.teal, 650);
     this.labels.form = this.label(this.node, '', 0, -442, 25, C.cream, 620);
     this.labels.hint = this.label(this.node, '', -307, -484, 21, C.muted, 425, 'left');
+    this.labels.reorder = this.label(this.node, '调整车序', 222, -483, 27, C.teal, 190, 'center','display');
     this.labels.footer = this.label(this.node, '声音 开', -270, -577, 21, C.muted, 162);
     this.labels.motion = this.label(this.node, '镜头 开', -90, -577, 21, C.muted, 162);
     this.labels.speed = this.label(this.node, '倍速 ×1', 90, -577, 21, C.gold, 162);
@@ -110,7 +113,7 @@ export class Game extends Component {
       knownRecipes:Array.from(this.knownRecipes),linkLevel:this.model.linkLevel,
       maxHp:this.model.maxHp,boss:this.model.boss?{hp:this.model.boss.hp,maxHp:this.model.boss.maxHp}:null,
       bossCharge:this.model.bossCharge,endReason:this.model.endReason,
-      art:{style:'afterglow',menu:!!this.menuFrame,ground:!!this.groundArt,unitMaterial:!!this.unitMaterial,fx:this.fxFrames.length,activeFx:this.fxUsed,locomotive:!!this.loco,headVisible:!!this.loco?.active,zombie:!!this.zombieFrame,hull:!!this.hullFrame,weapons:Array.from(this.weaponFrames.keys()) },
+      art:{style:'afterglow',flow:!!this.flowMaterial,menu:!!this.menuFrame,ground:!!this.groundArt,unitMaterial:!!this.unitMaterial,fx:this.fxFrames.length,activeFx:this.fxUsed,locomotive:!!this.loco,headVisible:!!this.loco?.active,zombie:!!this.zombieFrame,hull:!!this.hullFrame,weapons:Array.from(this.weaponFrames.keys()) },
       effects:{particles:this.particles.length,defeated:this.defeated.length,chain:this.chain,
         feeds:this.supportEffects.filter(e=>e.type==='feed').map(e=>({fromY:e.y,toY:e.y+e.dy,life:e.life}))}, events:this.model.events.slice() }) };
   }
@@ -120,6 +123,7 @@ export class Game extends Component {
     this.audio?.close?.(); delete (globalThis as any).__doomsday;
     this.fireMaterial?.destroy();
     this.unitMaterial?.destroy();
+    this.flowMaterial?.destroy();
     for(const frame of this.slicedFrames)frame.destroy();
   }
   private hide() { this.model.pause(); }
@@ -148,6 +152,11 @@ export class Game extends Component {
     frame.packable=false;this.slicedFrames.push(frame);return frame;
   }
   private loadAfterglowArt() {
+    resources.load('afterglow-flow',EffectAsset,(err,effect)=>{
+      if(err){console.error('Flow material failed',err);return;}if(!this.isValid)return;
+      this.flowMaterial=new Material();this.flowMaterial.initialize({effectAsset:effect,defines:{USE_TEXTURE:true}});
+      for(const n of this.fxPool)n.getComponent(Sprite)!.customMaterial=this.flowMaterial;
+    });
     resources.load('art/afterglow-menu/spriteFrame',SpriteFrame,(err,frame)=>{
       if(err){console.error('Menu artwork failed',err);return;}if(!this.isValid)return;
       this.menuFrame=frame;
@@ -186,7 +195,7 @@ export class Game extends Component {
   private artEffect(index:number,x:number,y:number,w:number,h=w,angle=0,alpha=1) {
     const frame=this.fxFrames[index];if(!frame||this.fxUsed>=100)return false;
     let n=this.fxPool[this.fxUsed];
-    if(!n){n=this.sprite('Painted effect',frame,w,h,this.vortexLayer);this.emission(n.getComponent(Sprite)!);this.fxPool.push(n);}
+    if(!n){n=this.sprite('Painted effect',frame,w,h,this.vortexLayer);if(this.flowMaterial)n.getComponent(Sprite)!.customMaterial=this.flowMaterial;else this.emission(n.getComponent(Sprite)!);this.fxPool.push(n);}
     this.fxUsed++;n.active=true;n.setPosition(x,y,0);n.angle=angle;n.setScale(1,1,1);
     n.getComponent(UITransform)!.setContentSize(w,h);
     const sprite=n.getComponent(Sprite)!;sprite.spriteFrame=frame;sprite.color=new Color(255,255,255,Math.round(255*Math.max(0,Math.min(1,alpha))));
@@ -222,10 +231,18 @@ export class Game extends Component {
     for(const n of this.vortexSprites.values())n.destroy();this.vortexSprites.clear();
     this.toast('击破敌人，收集改装废料');this.tone(180,.15);
   }
+  private openWorkshop(slot=-1) {
+    if(this.model.openWorkshop()){this.selectedSlot=slot;this.atlas=false;}
+  }
   private touch(event: EventTouch) {
     this.unlockAudio();
     const p=event.getUILocation(), local=this.node.getComponent(UITransform)!.convertToNodeSpaceAR(new Vec3(p.x,p.y,0));
     for(let i=this.hitAreas.length-1;i>=0;i--){const a=this.hitAreas[i];if(Math.abs(local.x-a.x)<=a.w/2&&Math.abs(local.y-a.y)<=a.h/2){a.action();this.tone(470,.045);return;}}
+    if(this.model.phase==='combat'&&Math.abs(local.x)<65){
+      const worldY=local.y-this.worldNode.position.y;
+      const slot=this.slotY.findIndex(y=>Math.abs(y-worldY)<52);
+      if(slot>=0){this.openWorkshop(slot);return;}
+    }
     if(local.y < -540) {
       if(local.x < -180) this.sound=!this.sound;
       else if(local.x<0) this.lowMotion=!this.lowMotion;
@@ -254,6 +271,7 @@ export class Game extends Component {
     const delta=before==='combat'?(this.model.phase==='combat'?realDelta*this.debugSpeed:elapsed):
       ['menu','win','lose'].includes(before)?realDelta:0;
     if(before==='combat'||before==='menu')this.visualTime+=delta;
+    if(this.flowMaterial){this.flowParams.x=this.visualTime;this.flowMaterial.setProperty('flowParams',this.flowParams);}
     this.frameCount++;this.frameSeconds+=dt;if(this.frameSeconds>=1){this.fps=Math.round(this.frameCount/this.frameSeconds);this.frameCount=0;this.frameSeconds=0;}
     const frozen=['paused','workshop','supply'].includes(this.model.phase);
     if(!frozen){this.toastLife=Math.max(0,this.toastLife-delta);this.shake=Math.max(0,this.shake-delta*20);
@@ -416,14 +434,14 @@ export class Game extends Component {
       if(weapon){
         let n=this.weaponSprites.get(car.id);
         if(!n){const size=car.type==='fan'?109:117;n=this.sprite('Weapon',weapon,size,size,this.trainLayer);this.weaponSprites.set(car.id,n);}
-        const directional=car.type==='cannon'||car.type==='flame',recoil=directional?car.flash/.15*4:0;
+        const directional=car.type==='cannon'||car.type==='flame',recoil=directional?Math.sin(Math.min(1,car.flash/.15)*Math.PI*.85)*6:0;
         n.angle=car.type==='fan'?this.visualTime*420:directional?angle*180/Math.PI:0;
         n.setPosition(-Math.cos(angle)*recoil,y-Math.sin(angle)*recoil,0);
         const pulse=directional||car.type==='fan'?1:1+car.flash*.22;n.setScale(pulse,pulse,1);
       }else{this.circle(d,0,y,34,'#0C1D2290');this.drawCarModule(d,car.type,0,y,1,angle);}
       if(car.flash>0){
         if(car.type==='flame'){
-          if(!this.artEffect(3,Math.cos(angle)*105,y+Math.sin(angle)*105,176,92,angle*180/Math.PI,.85))this.drawFlame(a,angle,y);
+          this.flameJet(0,y,angle,160,this.visualTime,1);
         }
         else if(car.type==='cannon'){
           const mx=Math.cos(angle)*53,my=y+Math.sin(angle)*53;
@@ -447,6 +465,11 @@ export class Game extends Component {
       const length=Math.max(1,Math.hypot(p.dx,p.dy));
       const trail=p.kind==='pierce'?54:p.kind==='shatter'?32:22;
       const angle=Math.atan2(p.dy,p.dx)*180/Math.PI;
+      const dx=p.dx/length,dy=p.dy/length;
+      for(let j=1;j<=4;j++){
+        const tail=j*11,wave=Math.sin(this.visualTime*32+p.id+j)*j*.6;
+        this.line(a,[p.x-dx*tail-dy*wave,p.y-dy*tail+dx*wave,p.x-dx*(tail+7)-dy*wave,p.y-dy*(tail+7)+dx*wave],color+(j<3?'99':'44'),Math.max(1,4-j));
+      }
       if(this.artEffect(0,p.x-p.dx/length*15,p.y-p.dy/length*15,p.kind==='pierce'?100:66,32,angle,.9)){
         if(p.kind==='shatter')this.artEffect(2,p.x,p.y,34,34,angle,.6);
         continue;
@@ -462,7 +485,16 @@ export class Game extends Component {
     for(const v of m.vortices){
       const fade=Math.min(1,v.life/.3),spin=this.visualTime*9+v.id;
       if(v.element==='electric'){
-        if(this.artEffect(6,v.x,v.y,v.radius*2.2,v.radius*2.2,spin*32,.8*fade))continue;
+        const bloom=Math.min(1,v.age/.22),pulse=1+Math.sin(spin*1.3)*.09;
+        if(this.artEffect(6,v.x,v.y,v.radius*2.2*pulse*bloom,v.radius*1.7/pulse*bloom,spin*26,.42*fade)){
+          this.artEffect(6,v.x,v.y,v.radius*1.3*bloom,v.radius*1.3*bloom,-spin*43,.28*fade);
+          for(let j=0;j<4;j++){
+            const q=spin*1.4+j*Math.PI/2,r=v.radius*(.55+.2*Math.sin(q*1.7));
+            this.ribbon(a,v.x,v.y,q,r,3,spin+j,'#C0B2DB99');
+            this.circle(a,v.x+Math.cos(q)*r,v.y+Math.sin(q)*r,2,C.teal);
+          }
+          continue;
+        }
         a.strokeColor=new Color('#77E9E3');a.lineWidth=3;a.circle(v.x,v.y,v.radius*.75);a.stroke();
         a.strokeColor=new Color('#BDABEF');a.lineWidth=2;a.circle(v.x,v.y,v.radius*.5);a.stroke();
         for(let i=0;i<4;i++){
@@ -610,24 +642,42 @@ export class Game extends Component {
     }
     this.circle(g,x,y,radius*.115,'#FFF1BDB0');this.circle(g,x,y,radius*.055,'#FFFFFFD9');
   }
+  /** Tapered painted contours bend independently from the textured light layer. */
+  private ribbon(g:Graphics,x:number,y:number,angle:number,length:number,width:number,phase:number,color:string) {
+    const points:number[]=[],dx=Math.cos(angle),dy=Math.sin(angle);
+    for(let side=0;side<2;side++)for(let j=0;j<=12;j++){
+      const u=(side?12-j:j)/12;
+      const bend=Math.sin(u*5-phase)*width*.8*u;
+      const edge=Math.sin(Math.PI*u)*width*(side?-1:1)*(.75+.25*Math.sin(u*9+phase));
+      points.push(x+dx*u*length-dy*(bend+edge),y+dy*u*length+dx*(bend+edge));
+    }
+    this.polygon(g,points,color);
+  }
+  private flameJet(x:number,y:number,angle:number,reach:number,phase:number,power:number) {
+    const dx=Math.cos(angle),dy=Math.sin(angle),startX=x+dx*37,startY=y+dy*37;
+    const pulse=.86+.14*Math.sin(phase*29),length=(reach-37)*pulse;
+    this.artEffect(3,startX+dx*length*.5,startY+dy*length*.5,length*1.35,65*power,angle*180/Math.PI,.36);
+    for(let j=0;j<3;j++){
+      const q=angle+Math.sin(phase*17+j*2)*.065,spread=(j-1)*6;
+      this.ribbon(this.attacks,startX-dy*spread,startY+dx*spread,q,length*(1-j*.15),9*power,phase*22+j*2,j===1?'#FFE0BBD0':'#EDA08299');
+    }
+  }
   private drawEffects() {
     const g=this.fx;g.clear();
     for(const e of this.supportEffects){
       const t=1-e.life/e.max;
       if(e.type==='feed'){
-        const color=e.color||C.teal,travel=Math.min(1,t*1.5),side=e.dy>0?-67:67;
-        const points=[e.x,e.y,side,e.y,side,e.y+e.dy,e.x+e.dx,e.y+e.dy];
-        this.line(g,points,color+'33',8);this.line(g,points,color+'BB',2);
-        const length=134+Math.abs(e.dy);
-        for(let i=0;i<3;i++){
-          const distance=Math.max(0,travel-i*.08)*length;
-          let x:number,y:number;
-          if(distance<67){x=side*distance/67;y=e.y;}
-          else if(distance<67+Math.abs(e.dy)){x=side;y=e.y+Math.sign(e.dy)*(distance-67);}
-          else{x=side*(1-(distance-67-Math.abs(e.dy))/67);y=e.y+e.dy;}
-          this.circle(g,x,y,5-i,color);
+        const color=e.color||C.teal,travel=Math.min(1,t*3.5),side=e.dy>0?-56:56,points:number[]=[];
+        for(let j=0;j<=16;j++){
+          const u=j/16;points.push(e.x+Math.sin(Math.PI*u)*side,e.y+e.dy*u);
         }
-        if(travel===1)this.artEffect(4,e.x+e.dx,e.y+e.dy,90,106,this.visualTime*30,(1-t)*1.4);
+        this.line(g,points,color+'33',2);
+        for(let i=0;i<4;i++){
+          const u=Math.max(0,travel-i*.07),x=e.x+Math.sin(Math.PI*u)*side,y=e.y+e.dy*u;
+          this.line(g,[x-3,y,x,y+5,x+3,y,x,y-5,x-3,y],color,1.5);
+        }
+        const charge=1-Math.min(1,t/.35);
+        this.artEffect(4,e.x+e.dx,e.y+e.dy,46+charge*60,64+charge*55,-this.visualTime*45,Math.sin(Math.PI*t)*.72);
       }else if(e.type==='thermal-shot'){
         this.line(g,[e.x,e.y,e.x+e.dx,e.y+e.dy],'#FF814E99',8*(1-t)+2);
         this.line(g,[e.x,e.y,e.x+e.dx,e.y+e.dy],'#FFEACD',2);
@@ -635,43 +685,48 @@ export class Game extends Component {
         const points:number[]=[];const length=Math.max(1,Math.hypot(e.dx,e.dy));
         for(let i=0;i<=6;i++){const p=i/6,offset=i===0||i===6?0:Math.sin(i*5+this.visualTime*55)*13;
           points.push(e.x+e.dx*p-e.dy/length*offset,e.y+e.dy*p+e.dx/length*offset);}
-        this.line(g,points,'#67E1D6A0',7);this.line(g,points,'#EBFFF2',2);
+        this.line(g,points,'#B2A1DC77',5*(1-t)+1);this.line(g,points,'#D6F4F3',1.5);
+        this.artEffect(5,e.x+e.dx,e.y+e.dy,45*(1-t)+12,70*(1-t)+12,35,.55*(1-t));
       }else if(e.type==='beam'||e.type==='wind'){
         const angle=Math.atan2(e.dy,e.dx),reach=e.size||260;
-        const center=(e.type==='wind'?.25+.35*t:.55)*reach;
-        if(this.artEffect(e.type==='wind'?1:3,e.x+Math.cos(angle)*center,e.y+Math.sin(angle)*center,
-          e.type==='wind'?reach*.9:reach,e.type==='wind'?reach*.8:74,angle*180/Math.PI,(1-t)*.8))continue;
-        if(e.type==='beam'){
-          const dx=Math.cos(angle),dy=Math.sin(angle),width=13*(1-t)+4,tipX=e.x+dx*reach,tipY=e.y+dy*reach;
-          this.polygon(g,[e.x-dy*width,e.y+dx*width,tipX-dy*3,tipY+dx*3,tipX+dy*3,tipY-dx*3,e.x+dy*width,e.y-dx*width],'#F6813F88');
-          this.line(g,[e.x+dx*45,e.y+dy*45,tipX,tipY],'#FFBC66',7*(1-t)+2);
-          this.line(g,[e.x+dx*45,e.y+dy*45,tipX,tipY],'#FFF7DF',2);
-          for(let j=0;j<2;j++){
-            const r=60+(j*.35+t*.3)*reach;
-            this.line(g,[e.x+dx*r-dy*14,e.y+dy*r+dx*14,e.x+dx*(r+9),e.y+dy*(r+9),e.x+dx*r+dy*14,e.y+dy*r-dx*14],'#8DEAC399',2);
-          }
-        }else for(let i=-1;i<=1;i++){
-          const a=angle+i*.3,r=(.3+.7*t)*reach;
-          this.line(g,[e.x+Math.cos(a)*r*.55,e.y+Math.sin(a)*r*.55,e.x+Math.cos(a)*r,e.y+Math.sin(a)*r],'#A2EAD999',3);
+        if(e.type==='beam'){this.flameJet(e.x,e.y,angle,reach,this.visualTime,.6);continue;}
+        for(let j=0;j<3;j++){
+          const u=Math.max(0,Math.min(1,(t-j*.10)/.8));if(u<=0)continue;
+          const grow=1-Math.pow(1-u,3),q=angle+(j-1)*.14+Math.sin(u*4+j)*.035;
+          const radius=25+grow*reach*.64,fade=Math.sin(Math.PI*u)*.42;
+          this.artEffect(1,e.x+Math.cos(q)*radius,e.y+Math.sin(q)*radius,34+grow*reach*.5,26+grow*reach*.48,q*180/Math.PI+(j-1)*9,fade);
+          this.ribbon(g,e.x+Math.cos(q)*30,e.y+Math.sin(q)*30,q,radius,3+j,u*8+j,'#A8DADE77');
         }
+        continue;
       }else{
         const index=e.type==='cryo'||e.type==='iceblast'?2:e.type==='thermalburst'?7:5;
         const size=e.type==='impact'?e.size:e.type==='slam'?240:Math.max(50,e.size*2);
-        if(this.artEffect(index,e.x,e.y,size*(.6+.4*t),size*(.6+.4*t),0,Math.min(index===2?.65:1,(1-t)*1.7)))continue;
-        const color=e.type==='cryo'||e.type==='iceblast'?'#83D5E8':e.type==='slam'?C.red:C.gold;
-        g.strokeColor=new Color(color);g.lineWidth=2+3*(1-t);
-        const radius=e.type==='repair'?35:e.type==='slam'?120:e.size;
-        g.circle(e.x,e.y,radius*(.25+.75*t));g.stroke();
-        if(e.type==='cryo'||e.type==='iceblast')for(let j=0;j<6;j++){
-          const angle=j*Math.PI/3,r=radius*(.25+.75*t);
-          this.line(g,[e.x+Math.cos(angle)*r*.8,e.y+Math.sin(angle)*r*.8,e.x+Math.cos(angle)*r,e.y+Math.sin(angle)*r],color+'AA',2);
+        if(index===2){
+          const grow=1-Math.pow(1-t,3),r=size*.42;
+          this.artEffect(2,e.x,e.y,size*(.35+.65*grow),size*(.35+.65*grow),t*8,(1-t)*.28);
+          for(let j=0;j<7;j++){
+            const u=Math.max(0,(t-(j%3)*.035)/.92),q=j*Math.PI*2/7+e.x*.01;
+            const distance=r*(.25+.75*(1-Math.pow(1-u,3))),cx=e.x+Math.cos(q)*distance,cy=e.y+Math.sin(q)*distance;
+            const h=(9+j%3*4)*Math.sin(Math.PI*Math.min(1,u)),w=h*.26;
+            this.polygon(g,[cx+Math.cos(q)*h,cy+Math.sin(q)*h,cx-Math.sin(q)*w,cy+Math.cos(q)*w,cx-Math.cos(q)*h*.5,cy-Math.sin(q)*h*.5,cx+Math.sin(q)*w,cy-Math.cos(q)*w],'#BCDDEBC0');
+          }
+          continue;
         }
+        const pop=t<.18?.35+t*4:1.07-(t-.18)*.44;
+        this.artEffect(index,e.x,e.y,size*pop,size*pop*(.72+.28*Math.sin(t*Math.PI)),index===7?t*24:0,Math.pow(1-t,1.6));
+        for(let j=0;j<5;j++){
+          const q=j*Math.PI*2/5+e.x*.03,r=size*.55*(1-Math.pow(1-t,2));
+          this.line(g,[e.x+Math.cos(q)*r*.75,e.y+Math.sin(q)*r*.75,e.x+Math.cos(q)*r,e.y+Math.sin(q)*r],index===7?'#BBCFE999':'#E6B99D99',2*(1-t)+.5);
+        }
+        continue;
       }
     }
     for(const p of this.particles){g.fillColor=new Color(p.color);g.fillColor=new Color(g.fillColor.r,g.fillColor.g,g.fillColor.b,Math.min(255,p.life/p.max*255));g.circle(p.x,p.y,Math.max(.5,p.size*p.life/p.max));g.fill();}
   }
   private drawHUD() {
     const g=this.hud,m=this.model;g.clear();
+    const fighting=m.phase==='combat';
+    for(const key of ['hp','kills','stage','form','hint','toast','chain','boss','reorder'])this.labels[key].node.active=fighting;
     this.rect(g,-360,432,720,208,'#1D1D2EF5');this.rect(g,-360,-640,720,217,'#1D1D2EF5');
     this.line(g,[-310,512,310,512],'#C0B2DB44',1);
     this.line(g,[173,548,295,548],'#A8DADE55',1);
@@ -685,17 +740,24 @@ export class Game extends Component {
     this.labels.time.string=`${Math.floor(elapsed/60).toString().padStart(2,'0')}:${(elapsed%60).toString().padStart(2,'0')}`;
     this.labels.stage.string=this.entranceRemaining>0?'列车驶入 · 准备迎敌':m.time>=60?'关底战 · 80秒前击败首领':m.time>=38?'绝缘怪来袭 · 电击效果减弱':m.time>=30?'耐火怪来袭 · 火焰效果减弱':m.time>=18?'重甲怪来袭 · 物理伤害受阻':'击破敌人 · 收集改装废料';
     this.labels.form.string=m.phase==='menu'?'进攻  /  增益  /  减益':m.slots.map(c=>c?CARS[c.type].name.replace('车',''):'空位').join(' — ');
-    this.labels.hint.string=m.supplyCount>=6?`补给已收齐 · 相邻联动 ${m.links.length} 条`:`废料 ${m.scrap} / ${m.nextScrap} · 联动 ${m.links.length} 条`;
+    this.labels.hint.string=m.supplyCount>=6?`补给收齐 · ${m.links.length} 条联动`:`废料 ${m.scrap}/${m.nextScrap} · ${m.links.length} 条联动`;
+    if(fighting){
+      this.rect(g,122,-514,197,64,'#47516588');
+      this.line(g,[135,-513,304,-513],C.teal,2);
+      this.line(g,[125,-475,132,-483,125,-491],C.teal,2);
+      this.line(g,[310,-475,303,-483,310,-491],C.teal,2);
+    }
     this.labels.footer.string=`声音 ${this.sound?'开':'关'}`;this.labels.motion.string=`镜头 ${this.lowMotion?'关':'开'}`;
     this.labels.speed.string=`倍速 ×${this.debugSpeed}`;
     this.labels.tag.string=this.debugSpeed===1?'余晖防线 / 编组 05':`余晖防线 / 调试 ×${this.debugSpeed}`;
     this.labels.pause.string=m.phase==='paused'?'继续 ▶':'暂停 Ⅱ';
     for(let i=0;i<4;i++)this.line(g,[-339+i*180,-606,-201+i*180,-606],i===2?'#A8DADE99':'#C0B2DB44',1);
     const boss=m.boss;
-    this.labels.tag.node.active=!boss;
-    this.labels.boss.node.setPosition(0,535,0);
+    this.labels.tag.node.active=!boss&&fighting;
+    this.labels.boss.node.setPosition(0,531,0);
+    this.labels.boss.fontSize=22;this.labels.boss.color=new Color(C.cream);
     this.labels.boss.string=boss?`破阵者 ${Math.ceil(boss.hp)} / ${boss.maxHp}${m.bossCharge>.72?' · 冲击蓄力！':''}`:'';
-    if(boss){this.rect(g,-260,520,520,5,'#3E302C',2);this.rect(g,-260,520,520*Math.max(0,boss.hp/boss.maxHp),5,C.red,2);}
+    if(boss&&fighting){this.rect(g,-290,511,580,5,'#514156',2);this.rect(g,-290,511,580*Math.max(0,boss.hp/boss.maxHp),5,C.red,2);}
     this.labels.toast.node.setPosition(0,375,0);
     this.labels.toast.string=this.toastLife>0?this.toastText:'';
     this.labels.chain.string=this.chain>=4&&m.phase==='combat'&&!boss?`${this.chain} 连破`:'';
@@ -737,7 +799,7 @@ export class Game extends Component {
     const m=this.model,g=this.overlay;
     if(this.menuArt)this.menuArt.active=m.phase==='menu';
     if(m.phase==='combat'){
-      this.button('改装 ↔',224,-484,170,52,()=>{this.selectedSlot=-1;this.atlas=false;m.openWorkshop();},false);
+      this.hitAreas.push({x:222,y:-483,w:197,h:64,action:()=>this.openWorkshop()});
       return;
     }
     renderPanel({model:m,knownRecipes:this.knownRecipes,newRecipes:this.newRecipes,
@@ -753,6 +815,7 @@ export class Game extends Component {
         addHitArea:(x,y,w,h,action)=>{this.hitAreas.push({x,y,w,h,action});}
       },actions:{
         begin:()=>this.begin(),selectSlot:i=>this.slotClick(i),
+        openWorkshop:()=>this.openWorkshop(),
         setAtlas:(open,page)=>{this.atlas=open;this.atlasPage=page;},
         chooseOffer:i=>{this.selectedSlot=-1;this.atlas=false;m.chooseOffer(i);},
         discardOffer:()=>{m.discardOffer();this.selectedSlot=-1;},

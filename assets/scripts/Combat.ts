@@ -84,17 +84,27 @@ export class Combat {
   }
   private validSlot(index: number) { return Number.isInteger(index) && index >= 0 && index < SLOT_Y.length; }
   openWorkshop(): boolean {
-    if (this.phase !== 'combat') return false;
+    if (this.phase !== 'combat' && !(this.phase === 'paused' && (this.previous === 'combat' || this.previous === 'workshop'))) return false;
     this.phase = 'workshop'; this.freezeInterpolation(); this.revision++; return true;
   }
   install(index: number): boolean {
     if (this.phase !== 'workshop' || !this.pendingCar || !this.validSlot(index)) return false;
+    if (this.slots[index]) {
+      const right = this.slots.indexOf(null, index + 1);
+      const left = index > 0 ? this.slots.lastIndexOf(null, index - 1) : -1;
+      if (right >= 0) {
+        for (let i = right; i > index; i--) this.slots[i] = this.slots[i - 1];
+      } else if (left >= 0) {
+        for (let i = left; i < index; i++) this.slots[i] = this.slots[i + 1];
+      }
+      // With no empty slot, only the clicked car is scrapped. Otherwise every old object survives.
+    }
     this.slots[index] = this.makeCar(this.pendingCar); this.pendingCar = null;
     this.events.push({ type: 'car_installed', time: this.time, value: `${index}:${this.slots[index]!.type}` });
     this.effects.push({ type: 'upgrade', x: 0, y: SLOT_Y[index], size: 70, carSlot: index }); this.syncStructure(); return true;
   }
   swapSlots(a: number, b: number): boolean {
-    if (this.phase !== 'workshop' || !this.validSlot(a) || !this.validSlot(b) || a === b) return false;
+    if (this.phase !== 'workshop' || this.pendingCar || !this.validSlot(a) || !this.validSlot(b) || a === b) return false;
     [this.slots[a], this.slots[b]] = [this.slots[b], this.slots[a]];
     this.events.push({ type: 'cars_swapped', time: this.time, value: `${a}:${b}` }); this.syncStructure(); return true;
   }

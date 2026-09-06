@@ -1,0 +1,141 @@
+// Sprite-compatible flow for the unrotated 4 x 2, 1774 x 887 black FX atlas.
+// Row-major cells: wind 1, flame 3, vortex 6. Do not dynamically repack this atlas.
+CCEffect %{
+  techniques:
+  - passes:
+    - vert: sprite-vs:vert
+      frag: sprite-fs:frag
+      depthStencilState:
+        depthTest: false
+        depthWrite: false
+      blendState:
+        targets:
+        - blend: true
+          blendSrc: src_alpha
+          blendDst: one
+          blendSrcAlpha: one
+          blendDstAlpha: one
+      rasterizerState:
+        cullMode: none
+      properties:
+        alphaThreshold: { value: 0.001 }
+        flowParams: { value: [0, 1, 0, 0] }
+}%
+
+CCProgram sprite-vs %{
+  precision highp float;
+  #include <builtin/uniforms/cc-global>
+  #if USE_LOCAL
+    #include <builtin/uniforms/cc-local>
+  #endif
+  #if SAMPLE_FROM_RT
+    #include <common/common-define>
+  #endif
+
+  in vec3 a_position;
+  in vec2 a_texCoord;
+  in vec4 a_color;
+  out vec4 color;
+  out vec2 uv0;
+
+  vec4 vert () {
+    vec4 pos = vec4(a_position, 1.0);
+    #if USE_LOCAL
+      pos = cc_matWorld * pos;
+    #endif
+    #if USE_PIXEL_ALIGNMENT
+      pos = cc_matView * pos;
+      pos.xyz = floor(pos.xyz);
+      pos = cc_matProj * pos;
+    #else
+      pos = cc_matViewProj * pos;
+    #endif
+    uv0 = a_texCoord;
+    #if SAMPLE_FROM_RT
+      CC_HANDLE_RT_SAMPLE_FLIP(uv0);
+    #endif
+    color = a_color;
+    return pos;
+  }
+}%
+
+CCProgram sprite-fs %{
+  precision highp float;
+  #include <builtin/internal/embedded-alpha>
+  #include <builtin/internal/alpha-test>
+
+  in vec4 color;
+  uniform Flow {
+    vec4 flowParams;
+  };
+
+  #if USE_TEXTURE
+    in vec2 uv0;
+    #pragma builtin(local)
+    layout(set = 2, binding = 12) uniform sampler2D cc_spriteTexture;
+
+    float cellFade (vec2 pixel, vec2 size) {
+      vec2 edge = min(pixel, size - pixel);
+      return smoothstep(2.0, 8.0, min(edge.x, edge.y));
+    }
+  #endif
+
+  vec4 frag () {
+    vec4 o = vec4(0.0);
+    #if USE_TEXTURE
+      const vec2 atlasSize = vec2(1774.0, 887.0);
+      const vec2 nominalSize = atlasSize / vec2(4.0, 2.0);
+      vec2 pixel = clamp(uv0, vec2(0.0), vec2(1.0)) * atlasSize;
+
+      // Match atlasCell's rounded Rect boundaries (444/443 pixel cells).
+      vec2 edge1 = floor(nominalSize + 0.5);
+      float column = step(edge1.x, pixel.x)
+        + step(floor(nominalSize.x * 2.0 + 0.5), pixel.x)
+        + step(floor(nominalSize.x * 3.0 + 0.5), pixel.x);
+      vec2 cell = vec2(column, step(edge1.y, pixel.y));
+      vec2 begin = floor(cell * nominalSize + 0.5);
+      vec2 end = floor((cell + 1.0) * nominalSize + 0.5);
+      vec2 size = end - begin;
+      vec2 local = (pixel - begin) / size;
+      vec2 warped = local;
+      float index = cell.x + cell.y * 4.0;
+      float time = flowParams.x;
+      float strength = clamp(flowParams.y, 0.0, 2.0);
+
+      if (index == 1.0 || index == 3.0) {
+        float flame = step(2.0, index);
+        float phase = local.x * mix(14.0, 23.0, flame)
+          - time * mix(3.8, 6.0, flame);
+        warped.y += sin(phase + local.y * 7.0)
+          * mix(0.014, 0.020, flame) * strength;
+        warped.x += sin(phase * 0.7 - local.y * 9.0)
+          * 0.008 * strength;
+      } else if (index == 6.0) {
+        vec2 radial = local - 0.5;
+        float radius = length(radial);
+        float angle = sin(time * 2.0 - radius * 12.0) * 0.045 * strength;
+        float s = sin(angle);
+        float c = cos(angle);
+        radial = vec2(c * radial.x - s * radial.y, s * radial.x + c * radial.y);
+        radial *= 1.0 + sin(radius * 22.0 - time * 3.0) * 0.022 * strength;
+        warped = radial + 0.5;
+      }
+
+      vec2 warpedPixel = warped * size;
+      float edgeFade = cellFade(pixel - begin, size) * cellFade(warpedPixel, size);
+      // Two source texels protect bilinear filtering and fractional grid sizing.
+      vec2 samplePixel = begin + clamp(warpedPixel, vec2(2.0), size - 2.0);
+      o = CCSampleWithAlphaSeparated(cc_spriteTexture, samplePixel / atlasSize);
+      float brightness = max(o.r, max(o.g, o.b));
+      // Suppress near-black source noise without tinting the effect's RGB.
+      o.a *= smoothstep(0.025, 0.14, brightness) * edgeFade * strength;
+      #if IS_GRAY
+        float gray = dot(o.rgb, vec3(0.2126, 0.7152, 0.0722));
+        o.rgb = vec3(gray);
+      #endif
+    #endif
+    o *= color;
+    ALPHA_TEST(o);
+    return o;
+  }
+}%

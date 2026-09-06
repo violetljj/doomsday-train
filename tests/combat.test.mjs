@@ -6,6 +6,7 @@ function enemy(id=900,x=200,y=40,hp=1000,kind=0){return {id,x,y,hp,maxHp:hp,kind
 function carOffer(m,type,index){m.phase='supply';m.offers=[{kind:'car',id:type}];assert.equal(m.chooseOffer(0),true);assert.equal(m.install(index),true);assert.equal(m.resumeWorkshop(),true);}
 function fixture(types=['cannon']){
  const m=new Combat();m.start();m.enemies=[];m.spawnClock=-10000;m.supplyCount=6;m.nextScrap=Infinity;
+ m.slots=SLOT_Y.map(()=>null);m.carClocks.clear();
  for(let i=0;i<types.length;i++)if(types[i])carOffer(m,types[i],i);
  return m;
 }
@@ -79,7 +80,7 @@ noBase(shared);shared.enemies=[enemy(900,200,-85)];face(shared,shared.enemies[0]
 assert.equal(layout.swapSlots(0,1),false);layout.openWorkshop();const frozenLayout=JSON.stringify({time:layout.time,slots:layout.slots});assert.equal(layout.advance(.1,4),0);assert.equal(JSON.stringify({time:layout.time,slots:layout.slots}),frozenLayout);
 layout.swapSlots(0,1);assert.deepEqual(layout.links.map(l=>l.recipe.id),['cannon-fan']);layout.swapSlots(1,3);assert.equal(layout.links.length,0,'An empty middle slot cannot transmit a link; fan-cryo is not a recipe');
 assert.equal(layout.install(-1),false);layout.pendingCar='cryo';assert.equal(layout.resumeWorkshop(),false);assert.equal(layout.install(9),false);assert.equal(layout.discardOffer(),true);assert.equal(layout.discardOffer(),false);assert.equal(layout.resumeWorkshop(),true);
-const pending=fixture();pending.phase='supply';pending.offers=[{kind:'car',id:'flame'}];assert.equal(pending.chooseOffer(1),false);assert.equal(pending.chooseOffer(0),true);assert.equal(pending.chooseOffer(0),false);assert.equal(pending.offers.length,0);const removed=pending.slots[0].id;pending.install(0);assert.notEqual(pending.slots[0].id,removed);assert.equal(pending.slots[0].type,'flame');assert.equal(pending.install(0),false);assert.equal(pending.phase,'workshop');pending.resumeWorkshop();
+const pending=fixture();pending.phase='supply';pending.offers=[{kind:'car',id:'flame'}];assert.equal(pending.chooseOffer(1),false);assert.equal(pending.chooseOffer(0),true);assert.equal(pending.chooseOffer(0),false);assert.equal(pending.offers.length,0);const retained=pending.slots[0];assert.equal(pending.swapSlots(0,1),false);pending.install(0);assert.equal(pending.slots[1],retained);assert.equal(pending.slots[0].type,'flame');assert.equal(pending.install(0),false);assert.equal(pending.phase,'workshop');pending.resumeWorkshop();
 const changed=fixture(['flame','fan']);noBase(changed);changed.enemies=[enemy()];face(changed,changed.enemies[0]);step(changed);assert.equal(changed.seenRecipes.size,1);assert.ok(changed.effects.some(e=>e.type==='focused-flame'));changed.effects=[];changed.vortices=[];changed.openWorkshop();changed.swapSlots(1,3);changed.resumeWorkshop();step(changed,40);assert.equal(changed.links.length,0);assert.ok(!changed.effects.some(e=>e.type==='focused-flame'),'An old edge must stop triggering after a swap');
 carOffer(changed,'cannon',0);assert.equal(changed.slots[0].type,'cannon');assert.equal(changed.links.length,0);
 
@@ -97,9 +98,28 @@ step(cooldown,35);assert.ok(cooldown.effects.some(e=>e.type==='focused-flame'),'
 const symmetric=fixture(['cannon','fan']);noBase(symmetric);symmetric.enemies=[enemy()];face(symmetric,symmetric.enemies[0]);step(symmetric);
 const symmetricKey=[...symmetric.linkClocks.keys()][0];symmetric.openWorkshop();symmetric.swapSlots(0,1);assert.ok(symmetric.linkClocks.has(symmetricKey),'Reversing a symmetric pair preserves the same cooldown');
 
+// Inserting into an occupied slot preserves existing cars until all five slots are full.
+const inserted=fixture(['flame','fan','cannon',null,'cryo']);noBase(inserted);inserted.enemies=[enemy()];face(inserted,inserted.enemies[0]);step(inserted);
+const oldCars=inserted.slots.filter(Boolean),oldClocks=new Map(inserted.carClocks),oldPair=inserted.linkKey(0,inserted.links[0].recipe),oldCooldown=inserted.linkClocks.get(oldPair);
+oldCars[0].level=2;inserted.openWorkshop();inserted.pendingCar='tesla';assert.equal(inserted.swapSlots(0,1),false);assert.equal(inserted.install(0),true);
+assert.deepEqual(inserted.slots.slice(1),oldCars,'Right insertion moves the occupied segment to the nearest right gap');
+assert.equal(inserted.slots[1].level,2);for(const car of oldCars)assert.equal(inserted.carClocks.get(car.id),oldClocks.get(car.id));
+assert.equal(inserted.linkClocks.get(oldPair),oldCooldown,'Insertion retains cooldown history for surviving car pairs');
+inserted.effects=[];inserted.resumeWorkshop();face(inserted,inserted.enemies[0]);step(inserted);assert.ok(!inserted.effects.some(e=>e.type==='focused-flame'),'Insertion cannot refresh the shifted pair for an instant shot');
+inserted.openWorkshop();inserted.pendingCar='cannon';const scrapped=inserted.slots[1];inserted.install(1);
+assert.equal(inserted.slots.filter(Boolean).length,5);assert.ok(!inserted.slots.includes(scrapped));assert.ok(!inserted.carClocks.has(scrapped.id));assert.ok(!inserted.linkClocks.has(oldPair));assert.equal(inserted.slots[1].level,0);assert.ok(inserted.carClocks.has(oldCars[1].id));
+const holes=fixture(['cannon',null,'flame','fan',null]),holesBefore=holes.slots.slice();carOffer(holes,'cryo',2);
+assert.deepEqual(holes.slots,[holesBefore[0],null,holes.slots[2],holesBefore[2],holesBefore[3]],'A right gap is preferred even when a left gap also exists');assert.equal(holes.slots[2].type,'cryo');
+const leftInsert=fixture([null,'fan',null,'flame','cannon']),leftBefore=leftInsert.slots.slice();leftBefore[4].level=2;carOffer(leftInsert,'cryo',4);
+assert.deepEqual(leftInsert.slots.slice(0,4),[null,leftBefore[1],leftBefore[3],leftBefore[4]],'With no right gap, shift only the segment after the nearest left gap');assert.equal(leftInsert.slots[3].level,2);assert.equal(leftInsert.slots[4].type,'cryo');
+const directEmpty=fixture(['cannon',null,'fan',null,'cryo']),emptyBefore=directEmpty.slots.slice();carOffer(directEmpty,'tesla',1);
+for(const i of[0,2,3,4])assert.equal(directEmpty.slots[i],emptyBefore[i],'Installing into an empty slot never shifts other cars');
+const pausedWorkshop=fixture();pausedWorkshop.advance(1/60);pausedWorkshop.pause();const pausedTime=pausedWorkshop.time;assert.equal(pausedWorkshop.openWorkshop(),true);assert.equal(pausedWorkshop.phase,'workshop');assert.equal(pausedWorkshop.advance(.1,4),0);assert.equal(pausedWorkshop.time,pausedTime);assert.equal(pausedWorkshop.resumeWorkshop(),true);assert.equal(pausedWorkshop.getRenderAngle(0),pausedWorkshop.slots[0].angle);
+pausedWorkshop.phase='supply';pausedWorkshop.offers=[{kind:'car',id:'fan'}];pausedWorkshop.pause();assert.equal(pausedWorkshop.openWorkshop(),false,'A paused unclaimed supply cannot be bypassed through the workshop');pausedWorkshop.resume();pausedWorkshop.chooseOffer(0);pausedWorkshop.pause();assert.equal(pausedWorkshop.openWorkshop(),true);assert.equal(pausedWorkshop.pendingCar,'fan');assert.equal(pausedWorkshop.swapSlots(0,1),false);assert.equal(pausedWorkshop.resumeWorkshop(),false);
+
 function applyMod(m,id){m.phase='supply';m.offers=[{kind:'mod',id}];return m.chooseOffer(0);}
 const mods=fixture(['cannon','cannon','fan']);const firstId=mods.slots[0].id;assert.equal(applyMod(mods,'caliber'),true);assert.deepEqual(mods.slots.slice(0,2).map(c=>c.level),[1,1]);applyMod(mods,'caliber');assert.equal(applyMod(mods,'caliber'),false);assert.ok(!mods.availableMods().includes('caliber'));
-mods.phase='combat';mods.openWorkshop();mods.swapSlots(0,4);assert.equal(mods.slots[4].id,firstId);assert.equal(mods.slots[4].level,2);mods.pendingCar='cannon';mods.install(4);assert.equal(mods.slots[4].level,0,'Replacement receives a fresh car, not the scrapped car level');mods.resumeWorkshop();
+mods.phase='combat';mods.openWorkshop();mods.swapSlots(0,4);assert.equal(mods.slots[4].id,firstId);assert.equal(mods.slots[4].level,2);mods.pendingCar='cryo';mods.install(0);mods.pendingCar='tesla';mods.install(3);mods.pendingCar='cannon';mods.install(4);assert.equal(mods.slots[4].level,0,'Full-slot replacement receives a fresh car, not the scrapped car level');mods.resumeWorkshop();
 assert.equal(applyMod(mods,'fuel'),false,'An absent target cannot receive a mod');mods.phase='combat';carOffer(mods,'flame',0);assert.equal(applyMod(mods,'resonance'),true);assert.equal(applyMod(mods,'resonance'),true);assert.equal(applyMod(mods,'resonance'),false);assert.equal(mods.linkLevel,2);
 const snapshot=fixture();snapshot.enemies=[enemy()];step(snapshot);const oldDamage=snapshot.projectiles[0].damage;applyMod(snapshot,'caliber');assert.equal(snapshot.projectiles[0].damage,oldDamage);snapshot.carClocks.get(snapshot.slots[0].id).cooldown=0;step(snapshot);assert.ok(snapshot.projectiles.some(p=>p.damage>oldDamage),'New attacks use the upgraded car; existing shells keep their snapshot');
 
