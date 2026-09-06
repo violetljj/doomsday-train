@@ -1,6 +1,7 @@
-import { CAR_TYPES, CARS, MODS, RECIPES, ROLE_NAMES, getRecipe } from './Catalog.ts';
+import { CAR_TYPES, CARS, MODS, RECIPES, ROLE_NAMES } from './Catalog.ts';
 import type { CarType, CarRole, ModId } from './Catalog.ts';
 import type { Combat } from './Combat.ts';
+import { previewInstall, recipeChanges, offerSummary } from './ChoicePreview.ts';
 
 /** Presentation only. The host owns Cocos nodes, pointer routing and game actions. */
 export interface PanelPrimitives {
@@ -19,7 +20,10 @@ export interface PanelActions {
   begin(): void;
   selectSlot(index: number): void;
   setAtlas(open: boolean, page: number, cars?: boolean): void;
-  installPending(): void;
+  installPending(depart?: boolean): void;
+  manualPlacement?(): void;
+  confirmReplacement?(): void;
+  cancelReplacement?(): void;
   mergePending(): void;
   chooseOffer(index: number): void;
   discardOffer(): void;
@@ -37,6 +41,7 @@ export interface PanelContext {
   atlasPage: number;
   atlasCars: boolean;
   selectedSlot: number;
+  replacementConfirmed?: boolean;
   draw: PanelPrimitives;
   actions: PanelActions;
 }
@@ -133,19 +138,112 @@ function menu(c: PanelContext) {
     () => c.actions.setAtlas(true, 0, true), false);
 }
 
+function pendingWorkshop(c: PanelContext) {
+  const d = c.draw, m = c.model, type = m.pendingCar!;
+  const selected = c.selectedSlot, old = selected >= 0 ? m.slots[selected] : null;
+  const full = m.slots.every(Boolean), replacing = !!old && full;
+  const merging = old?.type === type;
+  const mods = old ? (Object.keys(old.mods) as ModId[]).filter(id => MODS[id] && old.mods[id] > 0) : [];
+  const confirming = replacing && c.replacementConfirmed;
+  const foreground = '#EDF1EA', muted = '#A4B4AE', accent = '#A6DFCD', loss = '#EDA69A';
+  // An opaque, unframed work surface keeps the scene texture away from the decision.
+  d.rect(-360, -440, 720, 864, '#1B2425FA');
+  d.line([-284, 330, 284, 330], '#61777566', 1);
+  d.label(confirming ? '确认替换' : '列车工坊', -284, 373, 34, foreground, 350, 'left', 'display');
+  d.label(replacing ? '替换车厢' : '装入车厢', 211, 373, 18, muted, 148);
+
+  const arrow = (x: number, y: number, color: string) => {
+    d.line([x - 19, y, x + 19, y], color, 2);
+    d.line([x + 9, y + 9, x + 19, y, x + 9, y - 9], color, 2);
+  };
+  if (selected >= 0) {
+    if (old) d.cardIcon(old.type, -141, 255, 128);
+    else {
+      d.circle(-141, 255, 43, '#34413F');
+      d.line([-155, 255, -127, 255], muted, 2);
+      d.line([-141, 241, -141, 269], muted, 2);
+    }
+    d.label(old ? CARS[old.type].name : `${selected + 1} 号空位`, -141, 176, 23, muted, 230);
+    arrow(0, 255, accent);
+    d.circle(141, 255, 69, '#315047');
+    d.cardIcon(type, 141, 255, 142);
+    d.label(CARS[type].name, 141, 176, 29, foreground, 230, 'center', 'display');
+  } else {
+    d.circle(-165, 253, 65, '#315047');
+    d.cardIcon(type, -165, 253, 134);
+    d.label(CARS[type].name, -68, 270, 34, foreground, 350, 'left', 'display');
+    d.label('选择装车位置', -68, 222, 22, muted, 350, 'left');
+  }
+
+  if (confirming) {
+    d.label(`将拆除 ${CARS[old!.type].name} · 强化 ${old!.level} 级`, 0, 111, 23, loss, 566);
+    if (!mods.length) d.label('没有已装改装', 0, -13, 23, muted, 566);
+    mods.forEach((id, i) => {
+      const x = i % 2 ? 152 : -152, y = 25 - Math.floor(i / 2) * 105;
+      d.modIcon?.(id, x - 89, y, 54);
+      d.label(MODS[id].name, x - 48, y + 12, 21, foreground, 200, 'left');
+      d.label(`−${old!.mods[id]}`, x - 48, y - 21, 20, loss, 200, 'left');
+    });
+    d.line([-284, -160, 284, -160], '#61777566', 1);
+    d.label('旧车与以上改装将被移除', 0, -201, 21, loss, 566);
+    d.button('确认替换并出发', 0, -303, 566, 70, () => c.actions.installPending(true));
+    d.label('返回调整', 0, -383, 23, muted, 300);
+    d.addHitArea(0, -383, 400, 58, () => c.actions.cancelReplacement?.());
+    return;
+  }
+
+  const spacing = 610 / m.slots.length;
+  d.line([-286, 20, 286, 20], '#617775', 3);
+  m.slots.forEach((car, i) => {
+    const x = (i - (m.slots.length - 1) / 2) * spacing, active = i === selected, width = spacing - 12;
+    d.rect(x - width / 2, -42, width, 148, active ? '#406658' : '#263332', 5);
+    if (active) d.line([x - width / 2 + 1, 104, x + width / 2 - 1, 104], accent, 4);
+    d.label(String(i + 1).padStart(2, '0'), x, 83, 18, active ? accent : muted, width);
+    if (car) d.cardIcon(car.type, x, 27, 87);
+    else {
+      d.line([x - 12, 25, x + 12, 25], muted, 2);
+      d.line([x, 13, x, 37], muted, 2);
+    }
+    d.label(car ? CARS[car.type].name.replace('车', '') : '空位', x, -26, 19, active ? foreground : muted, width - 4);
+    d.addHitArea(x, 32, width, 148, () => c.actions.selectSlot(i));
+  });
+
+  if (selected >= 0) {
+    d.label(replacing ? `将拆除 · 强化 ${old!.level} 级 / ${mods.length} 项改装`
+      : old ? '旧车移入空位 · 改装保留' : '保留现有车厢', 0, -80, 19, replacing ? loss : muted, 566);
+    const delta = recipeChanges(m.slots.map(car => car?.type ?? null), previewInstall(m, selected, type));
+    const rows = [...delta.added.map(recipe => ({ recipe, added: true })), ...delta.removed.map(recipe => ({ recipe, added: false }))];
+    if (!rows.length) d.label('联动不变', 0, -161, 23, muted, 566);
+    rows.forEach(({ recipe, added }, i) => {
+      const y = -128 - i * 38, color = added ? accent : loss;
+      d.label(added ? '+' : '−', -273, y, 26, color, 32);
+      const support = recipe.a === recipe.executor ? recipe.b : recipe.a;
+      d.cardIcon(support, -224, y, 34);
+      d.cardIcon(recipe.executor, -157, y, 34);
+      d.line([-200, y, -181, y], muted, 1);
+      d.line([-186, y + 4, -181, y, -186, y - 4], muted, 1);
+      d.label(c.knownRecipes.has(recipe.id) ? recipe.name : '未知联动', -118, y, 22, color, 400, 'left');
+    });
+    const command = !old ? '装车并出发' : full ? '替换旧车' : '插入并出发';
+    d.button(command, merging ? -146 : 0, -303, merging ? 272 : 566, 70,
+      () => replacing ? c.actions.confirmReplacement?.() : c.actions.installPending(true), !merging);
+    if (merging) d.button('合并升级', 146, -303, 272, 70, c.actions.mergePending);
+  }
+  d.label('手动调整', -146, -383, 22, muted, 260);
+  d.addHitArea(-146, -383, 272, 58, () => c.actions.manualPlacement?.());
+  d.label('放弃车厢', 146, -383, 22, muted, 260);
+  d.addHitArea(146, -383, 272, 58, c.actions.discardOffer);
+}
+
 function workshop(c: PanelContext) {
-  const d = c.draw, m = c.model, links = m.links, hasSpace = m.slots.some(car => !car);
+  if (c.model.pendingCar) { pendingWorkshop(c); return; }
+  const d = c.draw, m = c.model, links = m.links;
   const selectedCar = c.selectedSlot >= 0 ? m.slots[c.selectedSlot] : null;
-  const canMerge = !!selectedCar && selectedCar.type === m.pendingCar;
   const installed = selectedCar ? (Object.keys(selectedCar.mods) as ModId[])
     .filter(id => MODS[id] && (selectedCar.mods[id] || 0) > 0) : [];
-  heading(d, '列车工坊', m.pendingCar
-    ? `待装 ${CARS[m.pendingCar].name} · ${hasSpace ? '插入 / 同车合并' : '替换 / 同车合并'}`
-    : selectedCar ? `${CARS[selectedCar.type].name} · 已装 ${installed.length} 项词条 · 强化 ${selectedCar.level} 级`
+  heading(d, '列车工坊', selectedCar ? `${CARS[selectedCar.type].name} · 已装 ${installed.length} 项词条 · 强化 ${selectedCar.level} 级`
       : '辅助相邻武器 · 前后顺序不限');
-  const instruction = m.pendingCar
-    ? canMerge ? `同车合并：强化 ${selectedCar!.level} → ${selectedCar!.level + 1} 级，保留词条` : '选择目标槽位'
-    : c.selectedSlot >= 0 ? `长按拖动交换 · 也可点选另一槽位`
+  const instruction = c.selectedSlot >= 0 ? `长按拖动交换 · 也可点选另一槽位`
       : '长按车厢拖到目标槽位，松手交换';
   d.label(instruction, 0, 258, 22, c.selectedSlot >= 0 ? P.teal : P.gold, 576);
   const spacing = 610 / m.slots.length;
@@ -167,20 +265,19 @@ function workshop(c: PanelContext) {
       d.cardIcon(car.type, x, 146 + lift, 99);
       d.label(data.name, x, 87 + lift, 23, P.cream, width - 6, 'center', 'display');
       const modCount = (Object.keys(car.mods) as ModId[]).reduce((sum, id) => sum + (car.mods[id] || 0), 0);
-      const state = m.pendingCar ? selected ? '目标槽位' : car.type === m.pendingCar ? '可合并升级' : hasSpace ? '可插入' : '可替换'
-        : selected ? '已选中' : c.selectedSlot >= 0 ? '点此交换' : modCount ? `改装 ×${modCount}` : car.level ? `强化 ${car.level} 级` : '基础车厢';
+      const state = selected ? '已选中' : c.selectedSlot >= 0 ? '点此交换' : modCount ? `改装 ×${modCount}` : car.level ? `强化 ${car.level} 级` : '基础车厢';
       d.label(state, x, 61 + lift, 20, selected || c.selectedSlot >= 0 ? P.teal : P.muted, width - 6);
     } else {
       badge(d, `${i + 1} 空槽`, x, 207 + lift, width - 8, P.paper, 20);
       brush(d, x, 145 + lift, 69, 58, '#9D8FAD22');
       d.line([x - 13, 145 + lift, x + 13, 145 + lift], P.muted, 3);
       d.line([x, 132 + lift, x, 158 + lift], P.muted, 3);
-      d.label(m.pendingCar ? selected ? '目标槽位' : '可装入' : c.selectedSlot >= 0 ? '交换到此' : '空槽可交换', x, 91 + lift, 20, P.muted, width - 6);
+      d.label(c.selectedSlot >= 0 ? '交换到此' : '空槽可交换', x, 91 + lift, 20, P.muted, width - 6);
     }
     d.addHitArea(x, 139, width, 187, () => c.actions.selectSlot(i));
   });
   if (selectedCar) {
-    brush(d, 0, 0, 566, 81, '#72617C8C');
+    brush(d, 0, -3, 566, 95, '#72617C8C');
     const shown = installed.slice(0, installed.length > 3 ? 2 : 3);
     const summary = shown.map(id => `${MODS[id].name}×${selectedCar.mods[id]}`);
     if (installed.length > shown.length) summary.push(`另${installed.length - shown.length}项`);
@@ -188,38 +285,15 @@ function workshop(c: PanelContext) {
     // Explain a behavior-changing upgrade first; each shown name keeps its stack count.
     const detailId = installed.find(id => MODS[id].mode) || installed[0];
     const detail = detailId ? MODS[detailId].description : CARS[selectedCar.type].description;
-    d.label(detail, -267, -13, 20, P.muted, 535, 'left');
+    d.label(`标称 ${m.getCarAttackSummary(c.selectedSlot)}`, -267, -1, 18, P.gold, 535, 'left');
+    d.label(detail, -267, -29, 17, P.muted, 535, 'left');
   }
-  if (m.pendingCar && c.selectedSlot >= 0) {
-    const before = m.slots.map(car => car?.type ?? null);
-    const after = before.slice();
-    if (after[c.selectedSlot]) {
-      const right = after.indexOf(null, c.selectedSlot + 1);
-      const left = c.selectedSlot > 0 ? after.lastIndexOf(null, c.selectedSlot - 1) : -1;
-      if (right >= 0) for (let i = right; i > c.selectedSlot; i--) after[i] = after[i - 1];
-      else if (left >= 0) for (let i = left; i < c.selectedSlot; i++) after[i] = after[i + 1];
-    }
-    after[c.selectedSlot] = m.pendingCar;
-    const pairIds = (row: (CarType | null)[]) => row.slice(0, -1).map((a, i) => {
-      const b = row[i + 1]; return a && b ? getRecipe(a, b)?.id ?? null : null;
-    });
-    const oldPairs = pairIds(before), newPairs = pairIds(after);
-    const added = newPairs.filter((id, i) => id && id !== oldPairs[i]).map(id => RECIPES.find(r => r.id === id)?.name ?? id);
-    const broken = oldPairs.filter((id, i) => id && id !== newPairs[i]).map(id => RECIPES.find(r => r.id === id)?.name ?? id);
-    const action = canMerge ? `合并：${selectedCar!.level} → ${selectedCar!.level + 1} 级，保留 ${installed.length} 项词条与冷却` :
-      selectedCar ? (hasSpace ? '插入：旧车向空槽移位，原车与词条保留' : `替换：移除 ${CARS[selectedCar.type].name} 及其词条`) : '装入：占用此空槽，不影响其他车厢';
-    d.label('装入后预览', -267, -43, 19, P.gold, 535, 'left');
-    d.label(`${CARS[m.pendingCar].description}`, -267, -68, 18, ROLE_COLOR[CARS[m.pendingCar].role], 535, 'left');
-    d.label(action, -267, -91, 18, P.muted, 535, 'left');
-    d.label(`新增联动：${added.length ? added.join('、') : '无'}   ·   断开联动：${broken.length ? broken.join('、') : '无'}`, -267, -114, 18, added.length ? P.teal : P.muted, 535, 'left');
-  }
-  const hasPreview = !!m.pendingCar && c.selectedSlot >= 0;
-  const compactLinks = !!selectedCar || hasPreview;
+  const compactLinks = !!selectedCar;
   for (let i = 0; i < m.slots.length - 1; i++) {
-    const y = compactLinks ? (hasPreview ? -145 - i * 39 : -77 - i * 49) : 5 - i * 73;
+    const y = compactLinks ? -77 - i * 49 : 5 - i * 73;
     const link = links.find(l => l.index === i), recipe = link?.recipe;
     const known = !!recipe && c.knownRecipes.has(recipe.id);
-    brush(d, 0, y, 567, compactLinks ? (hasPreview ? 36 : 45) : 68, link ? '#49536A65' : '#39334755');
+    brush(d, 0, y, 567, compactLinks ? 45 : 68, link ? '#49536A65' : '#39334755');
     const routeColor = '#292A3A';
     brush(d, -255, y, 39, 35, link ? '#B8D4D2' : '#C6B7AB');
     brush(d, -193, y, 39, 35, link ? '#B8D4D2' : '#C6B7AB');
@@ -236,25 +310,11 @@ function workshop(c: PanelContext) {
     const caption = recipe ? known ? recipe.name : `未知 · ${recipe.hint}`
       : !m.slots[i] || !m.slots[i + 1] ? '装入车厢，连接相邻槽位'
         : CARS[m.slots[i]!.type].role === 'offense' ? '相邻增益或减益车可辅助武器' : '辅助之间暂无联动，请搭配武器';
-    if(hasPreview){
-      d.label(recipe ? `${relationship} · ${known ? recipe.name : '待发现'}` : relationship, -159, y, 18, recipe ? P.teal : P.muted, 425, 'left');
-    }else{
-      d.label(relationship, -159, y + (selectedCar ? 11 : 16), 20, P.muted, 425, 'left');
-      d.label(caption, -159, y - (selectedCar ? 11 : 14), 20, recipe ? known ? P.teal : P.gold : P.muted, 425, 'left');
-    }
+    d.label(relationship, -159, y + (selectedCar ? 11 : 16), 20, P.muted, 425, 'left');
+    d.label(caption, -159, y - (selectedCar ? 11 : 14), 20, recipe ? known ? P.teal : P.gold : P.muted, 425, 'left');
   }
-  if (m.pendingCar) {
-    if (c.selectedSlot >= 0) {
-      const command = !selectedCar ? '装入新车' : hasSpace ? '插入新车' : '替换旧车';
-      d.button(command, canMerge ? -146 : 0, -303, canMerge ? 272 : 566, 66, c.actions.installPending, !canMerge);
-      if (canMerge) d.button('合并升级', 146, -303, 272, 66, c.actions.mergePending);
-    }
-    d.button('放弃这节车厢', -146, -383, 272, 56, c.actions.discardOffer, false);
-    d.button('车厢图鉴', 146, -383, 272, 56, () => c.actions.setAtlas(true, 0, true), false);
-  } else {
-    d.button(`带着 ${links.length} 条联动出发  →`, 0, -303, 566, 66, c.actions.resumeWorkshop);
-    d.button('车厢与联动图鉴', 0, -375, 566, 56, () => c.actions.setAtlas(true, 0, true), false);
-  }
+  d.button(`带着 ${links.length} 条联动出发  →`, 0, -303, 566, 66, c.actions.resumeWorkshop);
+  d.button('车厢与联动图鉴', 0, -375, 566, 56, () => c.actions.setAtlas(true, 0, true), false);
 }
 
 function atlas(c: PanelContext) {
@@ -269,7 +329,8 @@ function atlas(c: PanelContext) {
     d.cardIcon(type, -218, y + 5, 110);
     d.label(car.name, -140, y + 41, 29, P.cream, 274, 'left', 'display');
     badge(d, ROLE_NAMES[car.role], 222, y + 40, 86, ROLE_COLOR[car.role]);
-    d.label(car.description, -140, y - 13, 20, P.muted, 399, 'left');
+    d.label(car.description, -140, y - 2, 18, P.muted, 399, 'left');
+    d.label(c.model.getBaseCarAttackSummary(type), -140, y - 39, 17, P.gold, 399, 'left');
   });
   else RECIPES.slice(page * 3, page * 3 + 3).forEach((recipe, i) => {
     const y = 145 - i * 153, known = c.knownRecipes.has(recipe.id);
@@ -294,7 +355,7 @@ function atlas(c: PanelContext) {
 function supply(c: PanelContext) {
   const d = c.draw, m = c.model;
   const hasSpace = m.slots.some(car => !car);
-  heading(d, '废料补给', hasSpace ? '三选一 · 插入新车 / 同车合并 / 改装' : '三选一 · 同车合并 / 改装 / 维修');
+  heading(d, m.milestoneSupply ? '第一站突破' : '废料补给', m.milestoneSupply ? '阶段补给 · 当前编组继续前进' : hasSpace ? '三选一 · 插入新车 / 同车合并 / 改装' : '三选一 · 同车合并 / 改装 / 维修');
   m.offers.forEach((offer, i) => {
     const y = 180 - i * 185, isCar = offer.kind === 'car', isRepair = offer.kind === 'repair';
     const heal = Math.min(m.maxHp - m.hp, offer.amount ?? m.repairAmount);
@@ -315,13 +376,14 @@ function supply(c: PanelContext) {
     }
     badge(d, isRepair ? '维修补给' : isCar ? `${ROLE_NAMES[CARS[offer.id as CarType].role]}车厢` : '改装词条', -207, y - 56, 122, color);
     d.label(data.name, -111, y + 47, 32, P.cream, 327, 'left', 'display');
-    d.label(data.description, -111, y + 1, 20, P.muted, 369, 'left');
-    d.label(isRepair ? `装甲 ${m.hp} → ${m.hp + heal}` : isCar ? '领取车厢 · 安装或同车合并' : '领取词条 · 强化配置', -111, y - 53, 20, P.teal, 334, 'left');
+    const summary = offerSummary(m, offer, c.knownRecipes);
+    summary.slice(0, 3).forEach((text, row) => d.label(text, -111, y + 12 - row * 32, 18,
+      row === 0 ? P.muted : P.teal, 369, 'left'));
     d.line([238, y - 53, 262, y - 53], P.teal, 1.5);
     d.line([254, y - 47, 262, y - 53, 254, y - 59], P.teal, 1.5);
     d.addHitArea(0, y + 4, 568, 168, () => c.actions.chooseOffer(i));
   });
-  d.label(`第 ${m.supplyCount} 次补给   ·   已收集 ${m.scrap} 废料`, 0, -336, 21, P.muted, 566);
+  d.label(`${m.milestoneSupply?'阶段奖励':`第 ${m.supplyCount} 次补给`}   ·   已收集 ${m.scrap} 废料`, 0, -336, 21, P.muted, 566);
   d.label('行进中每 5 秒缓慢修复 1 点装甲', 0, -373, 20, P.gold, 560);
 }
 
@@ -343,7 +405,7 @@ function results(c: PanelContext) {
   const d = c.draw, m = c.model, fallen = m.phase === 'lose';
   brush(d, 0, 382, 65, 7, fallen ? P.warning : P.teal);
   d.label(fallen ? '列车失守' : '行程记录', 0, 332, 50, fallen ? P.red : P.cream, 570, 'center', 'display');
-  d.label(`抵达第 ${m.wave} 波 · 调整编组，再向前走一程`, 0, 272, 22, P.muted, 570);
+  d.label(fallen ? `主要受损来源：${m.mainDamageSource}` : `抵达第 ${m.wave} 波`, 0, 272, 22, P.muted, 570);
   inset(d, -281, 96, 562, 126);
   d.label(`${m.kills}`, -141, 174, 52, P.cream, 240);
   d.label('击破敌人', -141, 124, 20, P.muted, 240);

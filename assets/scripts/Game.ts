@@ -1,8 +1,10 @@
 import { _decorator, Component, Node, Graphics, Color, UITransform, Label, Vec3, EventTouch,
   resources, SpriteFrame, Sprite, view, ResolutionPolicy, game, Game as EngineGame, Layers, profiler, Material, gfx, Rect, EffectAsset, Vec4, Vec2 } from 'cc';
 import { Combat, SLOT_Y } from './Combat';
+import { DamageNumbers } from './DamageNumbers';
 import { renderPanel } from './PanelRenderer';
 import { SlotDrag, workshopSlotAt } from './SlotDrag';
+import { recommendSlot, linkChanges } from './ChoicePreview';
 import { CARS, RECIPES, CarType, ModId } from './Catalog';
 const { ccclass } = _decorator;
 const C = { ink: '#1D1D2E', panel: '#302D43', edge: '#625C78', gold: '#E6B99D', cream: '#F0DFD0', muted: '#B9B3C4', teal: '#A8DADE', red: '#EA937F' };
@@ -29,13 +31,21 @@ export class Game extends Component {
   private chain = 0; private chainLife = 0; private emberClock = 0;
   private toastText = ''; private toastLife = 0;
   private audio: any = null; private sound = true; private lowMotion = false;
+  private soundTimes = new Map<string, number>();
+  private noiseBuffer: any = null; private flameBed: any = null; private flameUntil = 0;
+  private scrapPulse = 0;
+  private damageNumbers = new DamageNumbers();
+  private showDamage = true;
+  private digitFrames:SpriteFrame[]=[];private digitSprites:Node[]=[];
   private frameCount = 0; private frameSeconds = 0; private fps = 0;
   private debugSpeed = 1;
   private carArt = new Map<number,Node>();
   private selectedSlot = -1;
+  private replacementConfirmed = false;
   private slotDrag = new SlotDrag();
   private dragGraphics!: Graphics;
   private dragLabel!: Label;
+  private dragChanges: Label[] = [];
   private dragIcon: Node | null = null;
   private atlas = false; private atlasPage = 0; private atlasCars = true;
   private knownRecipes = new Set<string>(); private newRecipes = new Set<string>();
@@ -84,8 +94,9 @@ export class Game extends Component {
     this.labels.tag = this.label(this.node, '余晖防线  /  01', -310, 535, 20, C.muted, 350, 'left');
     this.labels.time = this.label(this.node, '00:00', 224, 570, 26, C.cream, 115);
     this.labels.hp = this.label(this.node, '装甲  100', -310, 475, 23, C.cream, 240, 'left');
-    this.labels.kills = this.label(this.node, '击破  0', 212, 475, 23, C.gold, 175);
-    this.labels.stage = this.label(this.node, '', 0, 415, 22, C.teal, 650);
+    this.labels.kills = this.label(this.node, '击破  0', 236, 415, 20, C.gold, 160);
+    this.labels.shield = this.label(this.node, '护盾 0/24', 195, 475, 23, '#C9BCEA', 234);
+    this.labels.stage = this.label(this.node, '', -310, 415, 20, C.teal, 430, 'left');
     this.labels.form = this.label(this.node, '', 0, -442, 25, C.cream, 620);
     this.labels.hint = this.label(this.node, '', -307, -484, 21, C.muted, 425, 'left');
     this.labels.reorder = this.label(this.node, '调整车序', 222, -483, 27, C.teal, 190, 'center','display');
@@ -93,6 +104,11 @@ export class Game extends Component {
     this.labels.motion = this.label(this.node, '镜头 开', -90, -577, 21, C.muted, 162);
     this.labels.speed = this.label(this.node, '倍速 ×1', 90, -577, 21, C.gold, 162);
     this.labels.pause = this.label(this.node, '暂停 Ⅱ', 270, -577, 21, C.cream, 162);
+    this.labels.numbers = this.label(this.node, '跳字 开', 144, -577, 21, C.gold, 136);
+    ['footer','motion','speed','numbers','pause'].forEach((key,i)=>{
+      this.labels[key].node.setPosition(-288+i*144,-577,0);
+      this.labels[key].node.getComponent(UITransform)!.setContentSize(136,40);
+    });
     this.labels.toast = this.label(this.node, '', 0, 375, 24, C.gold, 680);
     this.labels.chain = this.label(this.node, '', 245, 305, 28, C.gold, 205);
     this.labels.boss = this.label(this.node, '', 0, 385, 19, C.red, 570);
@@ -101,12 +117,13 @@ export class Game extends Component {
     this.overlay = this.overlayNode.addComponent(Graphics);
     this.dragGraphics = this.layer('Carriage drag');
     this.dragLabel = this.label(this.dragGraphics.node, '', 0, 0, 21, C.cream, 300);
+    this.dragChanges = [0, 1].map(i => this.label(this.dragGraphics.node, '', -267, -55 - i * 58, 19, i ? C.red : C.teal, 534, 'left'));
     this.node.on(Node.EventType.TOUCH_START, this.touchStart, this);
     this.node.on(Node.EventType.TOUCH_MOVE, this.touchMove, this);
     this.node.on(Node.EventType.TOUCH_CANCEL, this.touchCancel, this);
     this.node.on(Node.EventType.TOUCH_END, this.touch, this);
     game.on(EngineGame.EVENT_HIDE, this.hide, this);
-    try { const saved = globalThis.localStorage?.getItem('doomsday-settings'); if(saved){const v=JSON.parse(saved);this.sound=v.sound!==false;this.lowMotion=!!v.lowMotion;} } catch {}
+    try { const saved = globalThis.localStorage?.getItem('doomsday-settings'); if(saved){const v=JSON.parse(saved);this.sound=v.sound!==false;this.lowMotion=!!v.lowMotion;this.showDamage=v.showDamage!==false;} } catch {}
     try {
       const current=globalThis.localStorage?.getItem('doomsday-recipes-v04');
       const saved=JSON.parse(current??globalThis.localStorage?.getItem('doomsday-recipes-v03')??'[]');
@@ -118,16 +135,21 @@ export class Game extends Component {
       globalThis.localStorage?.setItem('doomsday-recipes-v04',JSON.stringify(Array.from(this.knownRecipes)));
     }catch{}
     this.loadAfterglowArt();
+    resources.load('art/afterglow-damage-digits/spriteFrame',SpriteFrame,(error,frame)=>{
+      if(!error)this.digitFrames=this.stripFrames(frame,12);
+    });
     // Read-only diagnostic snapshot for smoke checks, without exposing state mutation.
     (globalThis as any).__doomsday = { snapshot: () => ({ phase:this.model.phase,
       time:this.model.time,wave:this.model.wave,entranceRemaining:this.entranceRemaining,cameraY:this.worldNode.position.y, hp:this.model.hp, kills:this.model.kills, enemies:this.model.enemies.length,
       vortices:this.model.vortices.length, shield:this.model.shieldHp,maxShield:this.model.maxShield, seed:this.model.initialSeed, fps:this.fps, speed:this.debugSpeed,
       slots:this.model.slots.map((c,i)=>c?{id:c.id,type:c.type,level:c.level,mods:{...c.mods},range:this.model.getCarRange(i),angle:c.angle}:null),
       links:this.model.links.map(l=>({index:l.index,id:l.recipe.id,driver:l.driver,support:l.support})),pendingCar:this.model.pendingCar,
-      offers:this.model.offers.slice(),scrap:this.model.scrap,nextScrap:this.model.nextScrap,supplyCount:this.model.supplyCount,
+      offers:this.model.offers.slice(),scrap:this.model.scrap,nextScrap:this.model.nextScrap,supplyCount:this.model.supplyCount,supplyWait:this.model.supplyWait,
       knownRecipes:Array.from(this.knownRecipes),linkLevel:this.model.linkLevel,
+      selectedSlot:this.selectedSlot,replacementConfirmed:this.replacementConfirmed,
       maxHp:this.model.maxHp,boss:this.model.boss?{hp:this.model.boss.hp,maxHp:this.model.boss.maxHp}:null,
-      bossCharge:this.model.bossCharge,endReason:this.model.endReason,
+      bossCharge:this.model.bossCharge,endReason:this.model.endReason,damageNumbers:this.damageNumbers.items.map(n=>({amount:n.amount,incoming:n.incoming,shield:n.shield})),showDamage:this.showDamage,
+      attackStats:this.model.slots.map((_,i)=>this.model.getCarAttackStats(i)),mainDamageSource:this.model.mainDamageSource,
        art:{style:'afterglow',paper:!!this.paperArt,flow:!!this.flowMaterial,enemyKinds:Array.from(this.enemyFrames.keys()),menu:!!this.menuFrame,ground:!!this.groundArt,unitMaterial:!!this.unitMaterial,fx:this.fxFrames.length,flame:this.flameFrames.length,mods:this.modFrames.size,activeFx:this.fxUsed,locomotive:!!this.loco,headVisible:!!this.loco?.active,zombie:!!this.zombieFrame,hull:!!this.hullFrame,weapons:Array.from(this.weaponFrames.keys()) },
       effects:{particles:this.particles.length,defeated:this.defeated.length,chain:this.chain,
         feeds:this.supportEffects.filter(e=>e.type==='feed').map(e=>({fromY:e.y,toY:e.y+e.dy,life:e.life}))}, events:this.model.events.slice() }) };
@@ -144,7 +166,10 @@ export class Game extends Component {
     this.flowMaterial?.destroy();
     for(const frame of this.slicedFrames)frame.destroy();
   }
-  private hide() { this.clearDrag(); this.model.pause(); }
+  private hide() {
+    this.clearDrag(); this.model.pause();this.flameUntil=0;
+    if(this.flameBed)this.flameBed.gain.gain.setTargetAtTime(0,this.audio.currentTime,.02);
+  }
   private group(name:string,parent:Node) {const n=new Node(name);n.layer=Layers.Enum.UI_2D;parent.addChild(n);n.addComponent(UITransform).setContentSize(720,1280);return n;}
   private layer(name: string, parent=this.node) { const n=new Node(name);n.layer=Layers.Enum.UI_2D;parent.addChild(n);n.addComponent(UITransform).setContentSize(720,1280);return n.addComponent(Graphics); }
   private label(parent: Node, text: string, x: number, y: number, size: number, color: string, width=600, align='center',font:'display'|'body'='body') {
@@ -304,6 +329,7 @@ export class Game extends Component {
     for(let i=2;i<points.length;i+=2)g.lineTo(points[i],points[i+1]);g.stroke();
   }
   private begin() {
+    this.damageNumbers.clear();this.flameUntil=0;this.scrapPulse=0;
     this.unlockAudio();this.model.start(this.seed++,true);this.particles=[];this.chain=0;this.chainLife=0;
     this.entranceRemaining=1;
     this.visualTime=0;this.shake=0;this.emberClock=0;
@@ -336,6 +362,7 @@ export class Game extends Component {
   private clearDrag() {
     this.slotDrag.reset();this.dragGraphics?.clear();
     if(this.dragLabel)this.dragLabel.string='';
+    for(const label of this.dragChanges)label.string='';
     this.dragIcon?.destroy();this.dragIcon=null;
   }
   private updateDrag(dt:number) {
@@ -358,12 +385,20 @@ export class Game extends Component {
       this.rect(g,x-spacing/2+5,42,spacing-10,197,'#A8DADE28',8);
       g.strokeColor=new Color(C.teal);g.lineWidth=3;g.roundRect(x-spacing/2+5,42,spacing-10,197,8);g.stroke();
     }
-    const x=Math.max(-290,Math.min(290,d.x)),y=Math.max(-425,Math.min(445,d.y+85));
+    const x=Math.max(-290,Math.min(290,d.x)),y=Math.max(100,Math.min(175,d.y+35));
     this.rect(g,x-57,y-56,114,113,'#222B3AED',12);
     if(this.dragIcon)this.dragIcon.setPosition(x,y+5,0);
     else this.drawCarModule(g,this.model.slots[d.source]!.type,x,y,.7,Math.PI/2);
     this.dragLabel.string=target<0?'移出槽位 · 松手取消':target===d.source?'拖到另一槽位':this.model.slots[target]?`松手交换至 ${target+1} 号位`:`松手移至 ${target+1} 号位`;
-    this.dragLabel.node.setPosition(x,y+78,0);
+    this.rect(g,-284,-263,568,244,'#252437FA',6);
+    this.dragLabel.node.setPosition(0,-211,0);
+    if(target>=0&&target!==d.source){
+      const before=this.model.slots.map(car=>car?.type??null),after=before.slice();
+      [after[d.source],after[target]]=[after[target],after[d.source]];
+      const changes=linkChanges(before,after,this.knownRecipes);
+      this.dragChanges[0].string=`新增：${changes.added.join('、')||'无'}`;
+      this.dragChanges[1].string=`失去：${changes.removed.join('、')||'无'}`;
+    }else for(const label of this.dragChanges)label.string='';
   }
   private touch(event: EventTouch) {
     const d=this.slotDrag;
@@ -387,11 +422,12 @@ export class Game extends Component {
       if(slot>=0){this.openWorkshop(slot);return;}
     }
     if(local.y < -540) {
-      if(local.x < -180) this.sound=!this.sound;
-      else if(local.x<0) this.lowMotion=!this.lowMotion;
-      else if(local.x<180) this.debugSpeed=this.debugSpeed===4?1:this.debugSpeed*2;
+      if(local.x < -216) this.sound=!this.sound;
+      else if(local.x < -72) this.lowMotion=!this.lowMotion;
+      else if(local.x < 72) this.debugSpeed=this.debugSpeed===4?1:this.debugSpeed*2;
+      else if(local.x < 216) {this.showDamage=!this.showDamage;this.damageNumbers.clear();}
       else { if(this.model.phase==='paused')this.model.resume();else this.model.pause(); }
-      try{globalThis.localStorage?.setItem('doomsday-settings',JSON.stringify({sound:this.sound,lowMotion:this.lowMotion}));}catch{}
+      try{globalThis.localStorage?.setItem('doomsday-settings',JSON.stringify({sound:this.sound,lowMotion:this.lowMotion,showDamage:this.showDamage}));}catch{}
     }
   }
   private unlockAudio() {
@@ -400,10 +436,44 @@ export class Game extends Component {
   }
   private tone(freq:number, length:number, kind='sine') {
     if(!this.sound||!this.audio)return;
+    const now=this.audio.currentTime;
+    if(now-(this.soundTimes.get('tone')??-10)<.07)return;
+    this.soundTimes.set('tone',now);
     try {const o=this.audio.createOscillator(),g=this.audio.createGain();o.type=kind;o.frequency.setValueAtTime(freq,this.audio.currentTime);
       o.frequency.exponentialRampToValueAtTime(Math.max(30,freq*.45),this.audio.currentTime+length);
       g.gain.setValueAtTime(.045,this.audio.currentTime);g.gain.exponentialRampToValueAtTime(.001,this.audio.currentTime+length);
       o.connect(g);g.connect(this.audio.destination);o.start();o.stop(this.audio.currentTime+length);}catch{}
+  }
+  private weaponSound(kind: 'cannon'|'pierce'|'parallel'|'ice'|'electric'|'blast'|'flame') {
+    if(!this.sound||!this.audio)return;
+    const ctx=this.audio,now=ctx.currentTime;
+    if(kind==='flame')this.flameUntil=now+.22;
+    if(now-(this.soundTimes.get(kind)??-10)<(kind==='electric'?.12:.18))return;
+    this.soundTimes.set(kind,now);
+    try {
+      if(!this.noiseBuffer){
+        this.noiseBuffer=ctx.createBuffer(1,ctx.sampleRate,ctx.sampleRate);
+        const samples=this.noiseBuffer.getChannelData(0);
+        for(let i=0;i<samples.length;i++)samples[i]=Math.random()*2-1;
+      }
+      const source=ctx.createBufferSource(),filter=ctx.createBiquadFilter(),gain=ctx.createGain();
+      source.buffer=this.noiseBuffer;source.connect(filter);filter.connect(gain);gain.connect(ctx.destination);
+      if(kind==='flame'){
+        if(this.flameBed){source.disconnect();filter.disconnect();gain.disconnect();return;}
+        source.loop=true;filter.type='lowpass';filter.frequency.value=550;gain.gain.value=0;
+        source.start();this.flameBed={source,filter,gain};return;
+      }
+      const ice=kind==='ice',electric=kind==='electric',pierce=kind==='pierce',parallel=kind==='parallel';
+      const duration=ice?.19:electric?.075:pierce?.16:parallel?.14:.2;
+      filter.type=ice?'highpass':electric||pierce?'bandpass':'lowpass';
+      filter.frequency.setValueAtTime(ice?2600:electric?1700:pierce?1300:parallel?850:380,now);
+      filter.Q.value=electric?5:pierce?2:.7;
+      gain.gain.setValueAtTime(.001,now);gain.gain.linearRampToValueAtTime(ice?.055:electric?.04:.075,now+.006);
+      gain.gain.exponentialRampToValueAtTime(.001,now+duration);
+      source.start(now);source.stop(now+duration);
+      source.onended=()=>{source.disconnect();filter.disconnect();gain.disconnect();};
+      if(kind==='cannon'||kind==='blast'||parallel)this.tone(parallel?155:kind==='blast'?65:95,duration,'triangle');
+    }catch{}
   }
   private toast(text:string) {this.toastText=text;this.toastLife=2.2;}
   update(dt:number) {
@@ -421,6 +491,8 @@ export class Game extends Component {
     if(this.flowMaterial){this.flowParams.x=this.visualTime;this.flowMaterial.setProperty('flowParams',this.flowParams);}
     this.frameCount++;this.frameSeconds+=dt;if(this.frameSeconds>=1){this.fps=Math.round(this.frameCount/this.frameSeconds);this.frameCount=0;this.frameSeconds=0;}
     const frozen=['paused','workshop','supply'].includes(this.model.phase);
+    if(!frozen)this.damageNumbers.advance(realDelta);
+    this.scrapPulse=Math.max(0,this.scrapPulse-realDelta*3);
     if(!frozen){this.toastLife=Math.max(0,this.toastLife-delta);this.shake=Math.max(0,this.shake-delta*20);
       this.chainLife=Math.max(0,this.chainLife-delta);if(this.chainLife===0)this.chain=0;}
     if(!frozen)for(const p of this.particles){p.life-=delta;p.x+=p.vx*delta;p.y+=p.vy*delta;const drag=Math.pow(.96,delta*60);p.vx*=drag;p.vy*=drag;}
@@ -437,10 +509,16 @@ export class Game extends Component {
     this.supportEffects=this.supportEffects.filter(e=>e.life>0);
     let frameKills=0;const discoveries:string[]=[];
     for(const e of this.model.effects.splice(0)) {
+      if(this.showDamage && e.damage && ['hit','damage','shield-damage','shield'].includes(e.type)){
+        const incoming=e.type==='damage'||e.type==='shield-damage',shield=e.type==='shield-damage'||e.type==='shield';
+        const color=shield?'#ABDDEA':incoming?'#F3A18E':e.element==='ice'?'#BDEBF1':e.element==='electric'?'#D8C4ED':e.element==='fire'?'#F1BB91':e.element==='acid'?'#D4DFA4':'#F5D6A6';
+        this.damageNumbers.add(`${incoming?e.type:e.enemyId}:${shield?'shield':e.element??e.source??''}`,e.x,e.y,e.damage,color,incoming,shield);
+      }
+      if(e.type==='shield-damage')continue;
       if(e.type==='discovery'&&e.recipeId){
         const recipe=RECIPES.find(r=>r.id===e.recipeId);
         if(recipe&&!this.knownRecipes.has(recipe.id)){
-          this.knownRecipes.add(recipe.id);this.newRecipes.add(recipe.id);discoveries.push(recipe.name);this.tone(710,.35,'triangle');
+          this.knownRecipes.add(recipe.id);this.newRecipes.add(recipe.id);discoveries.push(recipe.name);this.tone(710,.35,'triangle');this.shake=Math.max(this.shake,3);
           try{globalThis.localStorage?.setItem('doomsday-recipes-v04',JSON.stringify(Array.from(this.knownRecipes)));}catch{}
         }
         continue;
@@ -454,13 +532,22 @@ export class Game extends Component {
         continue;
       }
       if(e.type==='chain-reaction'){
-        // A shared driver has multiple live recipes: surface that moment as a
-        // distinct beat so the player understands why a dense build spikes.
-        this.supportEffects.push({type:'blast',x:e.x,y:e.y,dx:0,dy:0,size:e.size,life:.42,max:.42,recipeId:e.recipeId});
-        this.shake=Math.max(this.shake,3);this.tone(180,.16,'sawtooth');
-        this.toast('链式共鸣 · 联动增幅');
+        this.supportEffects.push({type:'feed',x:e.x,y:e.y,dx:0,dy:0,size:24,life:.28,max:.28,recipeId:e.recipeId});
         continue;
       }
+      if(e.type==='milestone'){this.toast('第一站突破 · 当前编组继续前进');this.shake=Math.max(this.shake,4);this.tone(520,.4,'triangle');continue;}
+      if(e.type==='enemy-introduced'){
+        const names:Record<number,string>={1:'快速敌人',2:'重甲敌人',4:'耐火敌人',5:'绝缘敌人',6:'护盾敌人',7:'分裂敌人',8:'再生敌人'};
+        this.toast(`${names[e.enemyKind??0]||'敌群'}抵达`);continue;
+      }
+      if(e.type==='demonstration-pack')continue;
+      if(e.type==='boss-charge'){this.toast('破阵者蓄力 · 即将冲击列车');this.tone(145,.3,'sawtooth');continue;}
+      if(e.type==='cold-shatter'){
+        this.supportEffects.push({type:'iceblast',x:e.x,y:e.y,dx:0,dy:0,size:27,life:.38,max:.38,recipeId:e.recipeId});
+        this.weaponSound('ice');continue;
+      }
+      if(e.type==='parallel-shot'){this.weaponSound('parallel');continue;}
+      if(e.type==='pierce'){this.weaponSound('pierce');continue;}
       if(e.type==='link-shot'){
         const recipe=RECIPES.find(r=>r.id===e.recipeId),electric=recipe?.executor==='tesla';
         this.supportEffects.push({type:electric?'tesla':'thermal-shot',x:e.x,y:e.y,dx:e.dx??0,dy:e.dy??0,size:e.size,life:.24,max:.24});
@@ -472,10 +559,12 @@ export class Game extends Component {
         const life=e.type==='rail-beam'?.22:e.type==='flame'?.36:e.type==='tesla'?.24:e.type==='repair'?.8:e.type==='cannon-impact'?.38:.5;
         this.supportEffects.push({type:visualKind,x:e.x,y:e.y,dx:e.dx??0,dy:e.dy??0,size:e.size,life,max:life,recipeId:e.recipeId});
         if(this.supportEffects.length>32)this.supportEffects.shift();
-        if(e.type==='slam'){this.shake=9;this.tone(55,.25,'triangle');this.toast('首领冲击 · 护住列车');}
-        if(e.type==='tesla')this.tone(320,.055,'triangle');
+        if(e.type==='slam'){this.shake=5;this.tone(55,.25,'triangle');this.toast('首领冲击 · 命中列车');}
+        if(e.type==='tesla'||e.type==='conduction')this.weaponSound('electric');
+        if(e.type==='flame'||e.type==='focused-flame')this.weaponSound('flame');
+        if(e.type==='cryo'||e.type==='shatter')this.weaponSound('ice');
+        if(e.type==='thermal')this.weaponSound('blast');
         if(e.type==='repair'){this.toast(`应急维修 · 装甲 +${e.size}`);this.tone(520,.22);}
-        if(e.type==='cannon-impact'){this.shake=Math.max(this.shake,2);this.tone(75,.09,'triangle');}
         continue;
       }
       if(e.type==='boss'){this.toast('精英破阵者 · 击破后继续前进');this.tone(95,.4,'triangle');continue;}
@@ -487,11 +576,11 @@ export class Game extends Component {
       const count=e.type==='upgrade'?40:e.type==='kill'?7:e.type==='hit'?2:9;
       const color=e.type==='kill'?C.gold:e.type==='damage'?C.red:e.type==='upgrade'?C.teal:C.gold;
       for(let i=0;i<count&&this.particles.length<200;i++){
-        const a=(i/count)*Math.PI*2+this.visualTime, speed=e.type==='upgrade'?150:45+Math.random()*100;
+        const a=e.type==='kill'?Math.atan2(e.dy??0,e.dx??1)+(i/count-.5)*1.9:(i/count)*Math.PI*2+this.visualTime, speed=e.type==='upgrade'?150:45+Math.random()*100;
         this.particles.push({x:e.x,y:e.y,vx:Math.cos(a)*speed,vy:Math.sin(a)*speed,life:.4+Math.random()*.3,max:.7,size:e.type==='kill'?3:5,color});
       }
       if(e.type==='kill'){
-        frameKills++;
+        frameKills++;this.scrapPulse=1;
         if(this.zombieFrame&&this.defeated.length<24){
           const size=e.enemyKind===2?67:52,n=this.sprite('Defeated',this.enemyFrames.get(e.enemyKind??0)||this.zombieFrame,size,size,this.enemyLayer);
           n.setPosition(e.x,e.y,0);n.angle=30;
@@ -500,8 +589,10 @@ export class Game extends Component {
       }
       if(e.type==='damage'){this.shake=6;this.tone(65,.15,'triangle');}
       if(e.type==='upgrade'){this.shake=8;this.tone(660,.35,'triangle');}
-      if(e.type==='fire')this.tone(100,.09,'triangle');
+      if(e.type==='fire')this.weaponSound('cannon');
     }
+    if(this.flameBed){const active=this.sound&&this.model.phase==='combat'&&this.audio.currentTime<this.flameUntil;
+      this.flameBed.gain.gain.setTargetAtTime(active?.022:0,this.audio.currentTime,.035);}
     if(discoveries.length)this.toast(`发现联动 · ${discoveries.join(' / ')}`);
     if(frameKills){this.chain+=frameKills;this.chainLife=1.25;this.tone(130+Math.min(12,this.chain)*16,.065,'triangle');
       if(frameKills>=3)this.shake=Math.max(this.shake,Math.min(4,frameKills));}
@@ -517,12 +608,12 @@ export class Game extends Component {
     }
     const cameraY=this.combatOffset-650*Math.pow(this.entranceRemaining,3);
     this.worldNode.setPosition(!this.lowMotion?Math.sin(this.visualTime*85)*this.shake:0,cameraY,0);
-    this.fx.node.setPosition(0,cameraY,0);
+    this.fx.node.setPosition(this.worldNode.position.x,cameraY,0);
     if(this.loco){this.loco.active=this.model.phase==='menu'||entering||this.model.time<1.4;this.loco.setPosition(0,235+185*Math.min(1,this.model.time/1.4),0);}
     this.fxUsed=0;
     this.drawGround();this.drawWorld();this.drawEffects();this.drawHUD();
     for(let i=this.fxUsed;i<this.fxPool.length;i++)this.fxPool[i].active=false;
-    const nextState=`${this.model.phase}:${this.model.revision}:${this.selectedSlot}:${this.atlas}:${this.atlasPage}:${this.atlasCars}:${this.knownRecipes.size}`;
+    const nextState=`${this.model.phase}:${this.model.revision}:${this.selectedSlot}:${this.replacementConfirmed}:${this.atlas}:${this.atlasPage}:${this.atlasCars}:${this.knownRecipes.size}`;
     if(this.state!==nextState){this.state=nextState;this.drawPanel();}
   }
   private drawGround() {
@@ -567,7 +658,7 @@ export class Game extends Component {
         const gait=e.freeze>0?0:Math.sin(this.visualTime*12+e.id*2.4);
         n.setPosition(e.x,e.y+gait*1.6,0);n.angle=(Math.atan2(-e.y,-e.x)+Math.PI/2)*180/Math.PI+gait*5;
         n.setScale(e.flash>0?1.1:1,e.flash>0?1.1:1,1);
-        n.getComponent(Sprite)!.color=new Color(e.kind===3?'#F5906B':e.kind===2?'#B9C4D0':e.kind===4?'#FFAF62':e.kind===5?'#B394D9':'#FFFFFF');
+        n.getComponent(Sprite)!.color=new Color(e.flash>0?'#FFF4CF':e.freeze>0?'#A4E6F2':(e.slow??0)>0?'#BFDAE9':e.kind===3?'#F5906B':e.kind===2?'#B9C4D0':e.kind===4?'#FFAF62':e.kind===5?'#B394D9':'#FFFFFF');
       }else this.circle(g,e.x,e.y,size*.4,e.kind===4?C.gold:C.muted);
       if(e.kind===2||e.kind===4||e.kind===5){
         const color=e.kind===2?'#D2DFE5':e.kind===4?'#FFA552':'#C9A1ED';
@@ -625,7 +716,7 @@ export class Game extends Component {
     }
     for(const p of m.projectiles){
       if(p.beam)continue;
-      const color=p.corrosion?'#D4C78B':p.element==='ice'?'#B5DFEA':p.kind==='pierce'?'#C9BDDB':p.element==='fire'?'#E9B191':p.element==='electric'?C.teal:C.gold;
+      const color=p.corrosion?'#D4C78B':p.element==='ice'?'#B5DFEA':p.kind==='pierce'?'#C9BDDB':p.recipeId==='cannon-prism'?'#D9B5EB':p.element==='fire'?'#E9B191':p.element==='electric'?C.teal:C.gold;
       const length=Math.max(1,Math.hypot(p.dx,p.dy));
       const trail=p.kind==='pierce'?54:p.kind==='shatter'?32:22;
       const angle=Math.atan2(p.dy,p.dx)*180/Math.PI;
@@ -638,6 +729,7 @@ export class Game extends Component {
         continue;
       }
       if(p.kind==='cannon'){
+        if(p.recipeId==='cannon-prism')this.line(a,[p.x-dx*30,p.y-dy*30,p.x,p.y],color+'AA',4);
         this.artEffect(0,p.x-dx*10,p.y-dy*10,33,26,angle,.9,color);
         for(let j=1;j<=3;j++){
           const drift=Math.sin(p.id+j)*j*1.7,tail=j*10;
@@ -667,6 +759,13 @@ export class Game extends Component {
     for(const v of m.vortices){
       const fade=Math.min(1,v.life/.3),spin=this.visualTime*9+v.id;
       if(v.element==='electric'){
+        for(const e of m.enemies){
+          const distance=Math.hypot(e.x-v.x,e.y-v.y);
+          if(e.hp<=0||e.kind===3||distance>v.radius||distance<12)continue;
+          const t=(this.visualTime*2+e.id*.17)%1,x=e.x+(v.x-e.x)*t,y=e.y+(v.y-e.y)*t;
+          this.line(a,[e.x,e.y,v.x,v.y],'#A8DADE24',1);
+          this.circle(a,x,y,2,'#D2F2E5');
+        }
         const bloom=Math.min(1,v.age/.22),pulse=1+Math.sin(spin*1.3)*.09;
         if(this.artEffect(6,v.x,v.y,v.radius*2.2*pulse*bloom,v.radius*1.7/pulse*bloom,spin*26,.42*fade)){
           this.artEffect(6,v.x,v.y,v.radius*1.3*bloom,v.radius*1.3*bloom,-spin*43,.28*fade);
@@ -1019,11 +1118,36 @@ export class Game extends Component {
       const pigment=new Color(p.color);pigment.a=Math.round(255*fade);g.fillColor=pigment;
       g.moveTo(p.x-r,p.y-r*.2);g.lineTo(p.x+r*.55,p.y+r*.7);g.lineTo(p.x+r*.8,p.y-r*.45);g.lineTo(p.x-r*.6,p.y-r*.6);g.close();g.fill();
     }
+    let digitUsed=0;
+    for(const number of this.damageNumbers.items){
+      if(!this.digitFrames.length)break;
+      const text=(number.incoming?'-':'')+String(Number(number.amount.toFixed(1)));
+      const age=number.age,pop=this.lowMotion?1:age<.09?.65+.53*(1-Math.pow(1-age/.09,3)):age<.2?1.18-.18*(1-Math.pow(1-(age-.09)/.11,2)):1;
+      const size=(number.incoming?58:number.amount>=40?56:46)*pop;
+      const fade=Math.min(1,age/.035)*Math.pow(Math.min(1,number.life/.26),1.5);
+      const rise=this.lowMotion?0:18*(1-Math.exp(-age*12))+Math.max(0,age-.2)*12;
+      const x=number.x+(this.lowMotion?0:number.drift*age),y=number.y+rise;
+      const advance=(char:string)=>char==='.'?size*.15:char==='-'?size*.25:size*.4;
+      const width=[...text].reduce((sum,c)=>sum+advance(c),0);
+      let cursor=-width/2;
+      for(const char of text){
+        const frame=this.digitFrames['0123456789.-'.indexOf(char)];if(!frame)continue;
+        let node=this.digitSprites[digitUsed++];
+        if(!node){node=this.sprite('Damage ink',frame,36,48,this.fx.node);this.digitSprites.push(node);}
+        node.active=true;node.setPosition(x+cursor+advance(char)/2,y,0);node.angle=0;
+        node.getComponent(UITransform)!.setContentSize(size*.75,size);
+        const sprite=node.getComponent(Sprite)!;sprite.spriteFrame=frame;
+        const color=new Color(number.color);color.a=Math.round(255*fade);sprite.color=color;
+        cursor+=advance(char);
+      }
+      if(number.shield)this.line(g,[x-width/2-16,y+7,x-width/2-6,y+7,x-width/2-7,y-3,x-width/2-11,y-7,x-width/2-16,y-3,x-width/2-16,y+7],number.color+Math.round(fade*255).toString(16).padStart(2,'0'),2);
+    }
+    for(let i=digitUsed;i<this.digitSprites.length;i++)this.digitSprites[i].active=false;
   }
   private drawHUD() {
     const g=this.hud,m=this.model;g.clear();
     const fighting=m.phase==='combat';
-    for(const key of ['hp','kills','stage','form','hint','toast','chain','boss','reorder'])this.labels[key].node.active=fighting;
+    for(const key of ['hp','shield','kills','stage','form','hint','toast','chain','boss','reorder'])this.labels[key].node.active=fighting;
     this.paintRect(g,-365,430,730,217,'#26243BD0');this.paintRect(g,-365,-645,730,222,'#26243BD0');
     // Broken pigment tabs keep the HUD attached to the same paper language as
     // the workshop cards, while the lower opacity lets the terrain breathe.
@@ -1033,17 +1157,26 @@ export class Game extends Component {
     this.line(g,[173,548,295,548],'#A8DADE66',1);
     this.line(g,[-303,468,-244,466,-198,469],'#E6C9B33D',1.5);
     this.line(g,[194,-593,256,-596,310,-592],'#E6C9B32B',1.5);
-    this.paintRect(g,-312,444,624,9,'#4A435E');this.paintRect(g,-312,444,624*m.hp/m.maxHp,9,m.hp>30?C.teal:C.red);
-    for(let i=1;i<10;i++)this.rect(g,-312+i*62.4,446,2,9,C.ink);
+    this.paintRect(g,-315,439,372,18,'#A5C4C5');
+    this.rect(g,-312,442,366,12,'#252738');
+    this.rect(g,-312,442,366*Math.max(0,m.hp/m.maxHp),12,m.hp>30?C.teal:C.red);
+    for(let i=1;i<10;i++)this.rect(g,-312+i*36.6,442,2,12,'#25273888');
+    this.paintRect(g,75,439,240,18,'#A998C6');
+    this.rect(g,78,442,234,12,'#292336');
+    this.rect(g,78,442,234*Math.min(1,m.shieldHp/m.maxShield),12,'#C3B4E4');
+    for(let i=1;i<4;i++)this.rect(g,78+i*58.5,442,2,12,'#29233688');
     this.line(g,[-310,-510,310,-510],'#C0B2DB44',1);
     this.rect(g,-312,-527,624,3,'#4A435E');
-    this.rect(g,-312,-527,624*(Math.min(1,m.scrap/m.nextScrap)),3,C.gold);
-    this.labels.hp.string=`装甲 ${Math.ceil(m.hp)}/${m.maxHp}`;this.labels.kills.string=m.shieldHp>0?`护盾 ${Math.ceil(m.shieldHp)} · 击破 ${m.kills}`:`击破 ${m.kills}`;
+    this.rect(g,-312,-527,624*(Math.min(1,m.scrap/m.nextScrap)),3+this.scrapPulse*3,this.scrapPulse>0?C.cream:C.gold);
+    this.labels.hp.string=`装甲 ${Math.ceil(m.hp)}/${m.maxHp}`;this.labels.kills.string=`击破 ${m.kills}`;
+    this.labels.shield.string=`护盾 ${Math.ceil(m.shieldHp)}/${m.maxShield}`;
     const elapsed=Math.floor(m.time+.00001);
     this.labels.time.string=`${Math.floor(elapsed/60).toString().padStart(2,'0')}:${(elapsed%60).toString().padStart(2,'0')}`;
-    this.labels.stage.string=this.entranceRemaining>0?'列车驶入 · 准备迎敌':`第 ${m.wave} 波 · ${m.wave<2?'收集废料，组成车厢联动':m.wave<3?'护盾怪出现 · 蚀酸可穿盾':m.wave<4?'分裂怪出现 · 范围攻击清理幼体':'再生怪出现 · 燃烧抑制恢复'}`;
+    this.labels.stage.string=this.entranceRemaining>0?'列车驶入 · 准备迎敌':`第 ${m.wave} 波 · ${m.encounterBeat}`;
     this.labels.form.string=m.phase==='menu'?'进攻  /  增益  /  减益':m.slots.map(c=>c?CARS[c.type].name.replace('车',''):'空位').join(' — ');
-    this.labels.hint.string=`废料 ${m.scrap}/${m.nextScrap} · ${m.links.length} 条联动`;
+    this.labels.hint.string=m.scrap>=m.nextScrap&&m.supplyWait>0
+      ? `补给整备 ${Math.ceil(m.supplyWait)}秒 · ${m.links.length} 条联动`
+      : `废料 ${m.scrap}/${m.nextScrap} · ${m.links.length} 条联动`;
     if(fighting){
       this.paintRect(g,122,-514,197,64,'#61687A78');
       this.line(g,[135,-513,304,-513],C.teal,2);
@@ -1052,14 +1185,16 @@ export class Game extends Component {
     }
     this.labels.footer.string=`声音 ${this.sound?'开':'关'}`;this.labels.motion.string=`镜头 ${this.lowMotion?'关':'开'}`;
     this.labels.speed.string=`倍速 ×${this.debugSpeed}`;
+    this.labels.numbers.string=`跳字 ${this.showDamage?'开':'关'}`;
     this.labels.tag.string=this.debugSpeed===1?'余晖防线 / 无尽远征':`无尽远征 / 调试 ×${this.debugSpeed}`;
     this.labels.pause.string=m.phase==='paused'?'继续 ▶':'暂停 Ⅱ';
-    for(let i=0;i<4;i++)this.line(g,[-339+i*180,-606,-201+i*180,-606],i===2?'#A8DADE99':'#C0B2DB44',1);
+    for(let i=0;i<5;i++)this.line(g,[-347+i*144,-606,-229+i*144,-606],i===2?'#A8DADE99':'#C0B2DB44',1);
     const boss=m.boss;
     this.labels.tag.node.active=!boss&&fighting;
     this.labels.boss.node.setPosition(0,531,0);
     this.labels.boss.fontSize=22;this.labels.boss.color=new Color(C.cream);
-    this.labels.boss.string=boss?`破阵者 ${Math.ceil(boss.hp)} / ${boss.maxHp}${m.bossCharge>.72?' · 冲击蓄力！':''}`:'';
+    this.labels.boss.fontSize=20;
+    this.labels.boss.string=boss?`破阵者 ${Math.ceil(boss.hp)} / ${Math.ceil(boss.maxHp)} · 冲击 ${Math.max(1,Math.ceil((1-m.bossCharge)*m.bossAttackInterval))}秒`:'';
     if(boss&&fighting){this.rect(g,-290,511,580,5,'#514156',2);this.rect(g,-290,511,580*Math.max(0,boss.hp/boss.maxHp),5,C.red,2);}
     this.labels.toast.node.setPosition(0,375,0);
     this.labels.toast.string=this.toastLife>0?this.toastText:'';
@@ -1080,6 +1215,7 @@ export class Game extends Component {
   }
   private slotClick(index:number) {
     const m=this.model;
+    this.replacementConfirmed=false;
     if(m.pendingCar){this.selectedSlot=index;return;}
     if(this.selectedSlot<0){this.selectedSlot=index;return;}
     if(this.selectedSlot!==index)m.swapSlots(this.selectedSlot,index);
@@ -1158,6 +1294,7 @@ export class Game extends Component {
     }
     renderPanel({model:m,knownRecipes:this.knownRecipes,newRecipes:this.newRecipes,
       atlas:this.atlas,atlasPage:this.atlasPage,atlasCars:this.atlasCars,selectedSlot:this.selectedSlot,
+      replacementConfirmed:this.replacementConfirmed,
       draw:{
         rect:(x,y,w,h,color,radius)=>this.rect(g,x,y,w,h,color,radius),
         label:(text,x,y,size,color,width,align,font)=>{this.label(this.overlayNode,text,x,y,size,color,width,align,font);},
@@ -1179,10 +1316,17 @@ export class Game extends Component {
       },actions:{
         begin:()=>this.begin(),selectSlot:i=>this.slotClick(i),
         openWorkshop:()=>this.openWorkshop(),
-        setAtlas:(open,page,cars)=>{this.atlas=open;this.atlasPage=page;if(cars!==undefined)this.atlasCars=cars;},
-        installPending:()=>{if(m.install(this.selectedSlot))this.selectedSlot=-1;},
+        setAtlas:(open,page,cars)=>{this.replacementConfirmed=false;this.atlas=open;this.atlasPage=page;if(cars!==undefined)this.atlasCars=cars;},
+        manualPlacement:()=>{this.selectedSlot=-1;this.replacementConfirmed=false;},
+        confirmReplacement:()=>{this.replacementConfirmed=true;},
+        cancelReplacement:()=>{this.replacementConfirmed=false;},
+        installPending:depart=>{
+          if(m.slots.every(Boolean)&&!this.replacementConfirmed)return;
+          if(m.install(this.selectedSlot)){this.selectedSlot=-1;this.replacementConfirmed=false;if(depart)m.resumeWorkshop();}
+        },
         mergePending:()=>{if(m.mergePending(this.selectedSlot)){this.selectedSlot=-1;this.toast('同车合并 · 强化升级');}},
-        chooseOffer:i=>{this.selectedSlot=-1;this.atlas=false;m.chooseOffer(i);},
+        chooseOffer:i=>{this.selectedSlot=-1;this.replacementConfirmed=false;this.atlas=false;
+          if(m.chooseOffer(i)&&m.pendingCar)this.selectedSlot=recommendSlot(m,m.pendingCar);},
         discardOffer:()=>{m.discardOffer();this.selectedSlot=-1;},
         resumeWorkshop:()=>{this.selectedSlot=-1;m.resumeWorkshop();},
         resume:()=>m.resume(),backToMenu:()=>{m.phase='menu';this.atlas=false;}

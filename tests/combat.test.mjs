@@ -186,7 +186,14 @@ for(const kind of[4,5]){const m=fixture(['acid']);m.enemies=[enemy(900,200,40,10
 const brood=fixture();brood.enemies=[enemy(900,200,40,1,7)];brood.hit(brood.enemies[0],5,'physical',0,40);assert.equal(brood.enemies.filter(e=>e.hp>0).length,2);assert.equal(brood.scrap,1);brood.hit(brood.enemies[0],5,'physical',0,40);assert.equal(brood.enemies.length,3);
 const broodCap=fixture();broodCap.enemies=Array.from({length:99},(_,i)=>enemy(1000+i,200,40,1,i===0?7:0));broodCap.hit(broodCap.enemies[0],5,'physical',0,40);assert.equal(broodCap.enemies.filter(e=>e.hp>0).length,99);
 const regen=fixture();noBase(regen);regen.enemies=[{...enemy(900,200,40,1000,8),hp:500,regenClock:0}];step(regen);assert.equal(regen.enemies[0].hp,580);regen.enemies[0].regenClock=0;regen.ignite(regen.enemies[0],4);step(regen);assert.equal(regen.enemies[0].hp,580);assert.ok(regen.effects.some(e=>e.type==='regen'));
-const mix=fixture();mix.time=100;mix.enemies=[];const kinds=new Set();for(let i=0;i<200;i++){mix.spawn();kinds.add(mix.enemies[0].kind);mix.enemies=[];}for(const kind of[0,1,2,4,5,6,7,8])assert.ok(kinds.has(kind));mix.spawn();assert.ok(mix.enemies[0].maxHp>24);
+const mix=fixture();mix.time=180;mix.enemies=[];const kinds=new Set();for(let i=0;i<200;i++){mix.spawn();kinds.add(mix.enemies[0].kind);mix.enemies=[];}for(const kind of[0,1,2,4,5,6,7,8])assert.ok(kinds.has(kind));mix.spawn();assert.ok(mix.enemies[0].maxHp>24);
+for(const [kind,roll,time] of[[1,.4,12],[2,.5,18],[4,.65,30],[5,.75,38],[6,.85,44],[7,.9,50],[8,.98,60]]){
+ const introduced=fixture();introduced.random=()=>roll;introduced.time=time-.001;introduced.spawn();assert.equal(introduced.enemies.at(-1).kind,0);
+ introduced.time=time;introduced.spawn();assert.equal(introduced.enemies.at(-1).kind,kind);
+}
+for(const [time,rate] of[[0,1.8],[10,2.1],[20,2.4*1.18],[40,3*.76],[60,3.25],[180,4.75],[400,7*.76]]){
+ const pacedSpawn=new Combat();pacedSpawn.time=time;assert.ok(Math.abs(pacedSpawn.spawnRate-rate)<1e-8);
+}
 
 // Scrap rewards continue beyond the opening six, and every offer has valid distinct choices.
 function claimSequence(){
@@ -194,6 +201,7 @@ function claimSequence(){
  for(let round=0;round<9;round++){
   const threshold=m.nextScrap;
   while(m.scrap<threshold){const e=enemy(1000+m.scrap,200,40,1);m.enemies.push(e);m.hit(e,1,'physical',0,40);}
+  if(round>0){step(m);assert.equal(m.phase,'combat','Banked scrap cannot immediately reopen supply');m.time=m.nextSupplyTime-1/30;}
   step(m);assert.equal(m.phase,'supply');assert.equal(m.supplyCount,round+1);assert.equal(m.offers.length,3);
   const carIds=m.offers.filter(o=>o.kind==='car').map(o=>o.id);
   if(m.slots.filter(Boolean).length<5){assert.ok(carIds.some(id=>CARS[id].role==='offense'));assert.ok(carIds.some(id=>CARS[id].role!=='offense'));}
@@ -205,8 +213,38 @@ function claimSequence(){
  assert.equal(m.supplyCount,9);assert.ok(Number.isFinite(m.nextScrap)&&m.nextScrap>m.scrap);return cards;
 }
 assert.deepEqual(claimSequence(),claimSequence());
+// Reward surplus survives pauses and cannot produce back-to-back selection screens.
+const paced=fixture();paced.scrap=1000;paced.nextScrap=8;paced.supplyCount=0;step(paced);
+assert.equal(paced.phase,'supply');assert.equal(paced.nextScrap,28);
+paced.chooseOffer(0);paced.discardOffer();const waitBefore=paced.supplyWait;
+assert.equal(paced.advance(.1,4),0);assert.equal(paced.supplyWait,waitBefore);
+paced.resumeWorkshop();paced.pause();assert.equal(paced.advance(.1,4),0);assert.equal(paced.supplyWait,waitBefore);paced.resume();
+step(paced,359);assert.equal(paced.phase,'combat');assert.equal(paced.scrap,1000);
+step(paced);assert.equal(paced.phase,'supply');assert.equal(paced.supplyCount,2);assert.equal(paced.nextScrap,55);
+assert.ok(Math.abs(paced.events.filter(e=>e.type==='supply_offer')[1].time-paced.events.filter(e=>e.type==='supply_offer')[0].time-12)<1e-8);
+paced.start();assert.equal(paced.supplyWait,0);assert.equal(paced.nextScrap,8);
+
+// Spawned health is continuous at wave boundaries; living enemies keep their original maximum.
+const growth=fixture();growth.time=19.99;growth.random=()=>.1;growth.spawn();const opening=growth.enemies.at(-1);
+assert.equal(opening.maxHp,24);
+let priorHealth=1;
+for(let second=0;second<=600;second++){
+ growth.time=second;assert.ok(growth.enemyHealthScale>=priorHealth);
+ priorHealth=growth.enemyHealthScale;
+}
+for(const boundary of[20,40,60,80,100,160,180,300]){
+ growth.time=boundary-1e-4;const before=growth.enemyHealthScale;
+ growth.time=boundary+1e-4;assert.ok(growth.enemyHealthScale-before<.0001);
+}
+growth.time=180;growth.spawn();assert.ok(Math.abs(growth.enemies.at(-1).maxHp-49.2)<1e-8);assert.equal(opening.maxHp,24);
+growth.random=()=>.85;growth.spawn();assert.ok(Math.abs(growth.enemies.at(-1).barrier/20-growth.enemyHealthScale)<1e-8);
+growth.enemies=[enemy(900,200,40,1,7)];growth.hit(growth.enemies[0],5,'physical',0,40);
+assert.ok(growth.enemies.filter(e=>e.hp>0).every(e=>Math.abs(e.maxHp-12*growth.enemyHealthScale)<1e-8));
+for(const [time,health] of[[40,700],[100,1071],[160,1554]]){
+ growth.enemies=[];growth.time=time;growth.spawnBoss();assert.ok(Math.abs(growth.boss.maxHp-health)<1e-8);
+}
 const capped=fixture();capped.enemies=[];for(let i=0;i<120;i++)capped.spawn();assert.equal(capped.enemies.length,99);noBase(capped);capped.time=40-1/30;step(capped);assert.equal(capped.enemies.length,100);assert.equal(capped.boss.kind,3);assert.equal(capped.wave,3);
-const endless=fixture();noBase(endless);endless.time=80-1/30;step(endless);assert.equal(endless.phase,'combat');assert.equal(endless.wave,5);const firstBoss=endless.boss;endless.hit(firstBoss,1e6,'ice',0,40);step(endless);assert.equal(endless.phase,'combat');assert.equal(endless.boss,null);assert.equal(endless.events.filter(e=>e.type==='boss_killed').length,1);
+const endless=fixture();noBase(endless);endless.time=80-1/30;step(endless);assert.equal(endless.phase,'combat');assert.equal(endless.wave,5);const firstBoss=endless.boss;endless.hit(firstBoss,1e6,'ice',0,40);step(endless);assert.equal(endless.phase,'combat');assert.equal(endless.nextScrap,Infinity,'The milestone waits for an earned supply');assert.equal(endless.boss,null);assert.equal(endless.events.filter(e=>e.type==='boss_killed').length,1);
 endless.time=140-1/30;step(endless);assert.ok(endless.boss);assert.equal(endless.events.filter(e=>e.type==='boss_spawn').length,2);assert.equal(endless.endReason,'');
 const charge=fixture();noBase(charge);charge.bossSpawned=true;charge.enemies=[enemy(900,285,200,1400,3)];charge.bossClock=charge.bossAttackInterval-1/30;step(charge);assert.equal(charge.bossAttackDamage,8);assert.equal(charge.hp,92);assert.ok(charge.effects.some(e=>e.type==='slam'));
 

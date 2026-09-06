@@ -1,0 +1,13 @@
+import assert from 'node:assert/strict';
+import { DamageNumbers } from '../assets/scripts/DamageNumbers.ts';
+const numbers=new DamageNumbers();
+numbers.add('enemy:1',10,20,6,'#FFF');numbers.advance(.05);numbers.add('enemy:1',10,20,3,'#FFF');
+assert.equal(numbers.items.length,1);assert.equal(numbers.items[0].amount,9);
+numbers.add('enemy:2',10,20,5,'#FFF');assert.equal(numbers.items.length,2,'Never combine different targets');
+numbers.advance(.08);numbers.add('enemy:1',10,20,2,'#FFF');assert.equal(numbers.items.length,3,'A new attack batch gets a new numeral');
+numbers.add('armor',0,0,4,'#FFF',true);numbers.add('shield',0,0,5,'#FFF',true,true);
+assert.equal(numbers.items.filter(n=>n.incoming).length,2);
+numbers.advance(1);assert.equal(numbers.items.length,0);
+for(let i=0;i<80;i++)numbers.add(String(i),0,0,1,'#FFF');assert.equal(numbers.items.length,36);
+numbers.clear();numbers.add('zero',0,0,0,'#FFF');numbers.add('nan',0,0,NaN,'#FFF');assert.equal(numbers.items.length,0);
+console.log('Damage numerals: target isolation, bounded aggregation, separate armor/shield, expiry and capacity passed.');
