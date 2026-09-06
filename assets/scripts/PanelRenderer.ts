@@ -216,7 +216,7 @@ function workshop(c: PanelContext) {
   const hasPreview = !!m.pendingCar && c.selectedSlot >= 0;
   const compactLinks = !!selectedCar || hasPreview;
   for (let i = 0; i < m.slots.length - 1; i++) {
-    const y = compactLinks ? (hasPreview ? -145 : -77) - i * 39 : 5 - i * 73;
+    const y = compactLinks ? (hasPreview ? -145 - i * 39 : -77 - i * 49) : 5 - i * 73;
     const link = links.find(l => l.index === i), recipe = link?.recipe;
     const known = !!recipe && c.knownRecipes.has(recipe.id);
     brush(d, 0, y, 567, compactLinks ? (hasPreview ? 36 : 45) : 68, link ? '#49536A65' : '#39334755');
@@ -233,11 +233,15 @@ function workshop(c: PanelContext) {
     const relationship = link
       ? `#${link.support + 1} ${CARS[m.slots[link.support]!.type].name.replace('车', '')} → #${link.driver + 1} ${CARS[recipe!.executor].name.replace('车', '')}`
       : `${i + 1}号 — ${i + 2}号 · 独立工作`;
-    d.label(relationship, -159, y + (compactLinks ? (hasPreview ? 8 : 11) : 16), 20, P.muted, 425, 'left');
     const caption = recipe ? known ? recipe.name : `未知 · ${recipe.hint}`
       : !m.slots[i] || !m.slots[i + 1] ? '装入车厢，连接相邻槽位'
         : CARS[m.slots[i]!.type].role === 'offense' ? '相邻增益或减益车可辅助武器' : '辅助之间暂无联动，请搭配武器';
-    d.label(caption, -159, y - (compactLinks ? (hasPreview ? 8 : 11) : 14), 20, recipe ? known ? P.teal : P.gold : P.muted, 425, 'left');
+    if(hasPreview){
+      d.label(recipe ? `${relationship} · ${known ? recipe.name : '待发现'}` : relationship, -159, y, 18, recipe ? P.teal : P.muted, 425, 'left');
+    }else{
+      d.label(relationship, -159, y + (selectedCar ? 11 : 16), 20, P.muted, 425, 'left');
+      d.label(caption, -159, y - (selectedCar ? 11 : 14), 20, recipe ? known ? P.teal : P.gold : P.muted, 425, 'left');
+    }
   }
   if (m.pendingCar) {
     if (c.selectedSlot >= 0) {
