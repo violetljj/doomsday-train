@@ -354,8 +354,8 @@ export class Game extends Component {
       }
       const visualKind=e.type==='focused-flame'&&e.recipeId==='flame-prism'?'prismbeam':({fan:'wind','focused-flame':'beam','burning-arc':'tesla',conduction:'tesla',
         'burn-blast':'blast',thermal:'thermalburst',blizzard:'cryo',shatter:'iceblast'} as Record<string,string>)[e.type]||e.type;
-      if(['tesla','cryo','wind','beam','prismbeam','blast','thermalburst','slam','iceblast','burn','acid','prism','regen','shield','brood','repair','cannon-impact'].includes(visualKind)){
-        const life=e.type==='tesla'?.24:e.type==='repair'?.8:e.type==='cannon-impact'?.38:.5;
+      if(['flame','tesla','cryo','wind','beam','prismbeam','blast','thermalburst','slam','iceblast','burn','acid','prism','regen','shield','brood','repair','cannon-impact'].includes(visualKind)){
+        const life=e.type==='flame'?.36:e.type==='tesla'?.24:e.type==='repair'?.8:e.type==='cannon-impact'?.38:.5;
         this.supportEffects.push({type:visualKind,x:e.x,y:e.y,dx:e.dx??0,dy:e.dy??0,size:e.size,life,max:life});
         if(this.supportEffects.length>32)this.supportEffects.shift();
         if(e.type==='slam'){this.shake=9;this.tone(55,.25,'triangle');this.toast('首领冲击 · 护住列车');}
@@ -491,10 +491,7 @@ export class Game extends Component {
         const pulse=directional||car.type==='fan'?1:1+car.flash*.22;n.setScale(pulse,pulse,1);
       }else{this.circle(d,0,y,34,'#0C1D2290');this.drawCarModule(d,car.type,0,y,1,angle);}
       if(car.flash>0){
-        if(car.type==='flame'){
-          this.flameJet(0,y,angle,m.getCarRange(i),this.visualTime,1);
-        }
-        else if(car.type==='cannon'||car.type==='rail'){
+        if(car.type==='cannon'||car.type==='rail'){
           const mx=Math.cos(angle)*53,my=y+Math.sin(angle)*53;
           const rail=car.type==='rail';
           this.artEffect(5,mx,my,rail?94:64,rail?20:58,angle*180/Math.PI,car.flash/.15,rail?'#B9EBEC':'#EDB080');
@@ -723,20 +720,44 @@ export class Game extends Component {
     }
     this.polygon(g,points,color);
   }
-  private flameJet(x:number,y:number,angle:number,reach:number,phase:number,power:number) {
-    const dx=Math.cos(angle),dy=Math.sin(angle),startX=x+dx*37,startY=y+dy*37;
-    const pulse=.86+.14*Math.sin(phase*29),length=(reach-37)*pulse;
-    this.artEffect(3,startX+dx*length*.5,startY+dy*length*.5,length*1.35,65*power,angle*180/Math.PI,.36);
-    for(let j=0;j<3;j++){
-      const q=angle+Math.sin(phase*17+j*2)*.065,spread=(j-1)*6;
-      this.ribbon(this.attacks,startX-dy*spread,startY+dx*spread,q,length*(1-j*.15),9*power,phase*22+j*2,j===1?'#FFE0BBD0':'#EDA08299');
+  /** Short pigment lobes roll along the jet; no full-length stretched flame sprite. */
+  private flameJet(x:number,y:number,angle:number,reach:number,phase:number,power:number,age?:number) {
+    const dx=Math.cos(angle),dy=Math.sin(angle),length=Math.max(20,reach-37);
+    const packet=age!==undefined,progress=age??0;
+    // The attached core dies first, leaving detached tips to curl and cool.
+    const core=packet?Math.max(0,1-progress*2.1):1;
+    if(core>0){
+      this.artEffect(3,x+dx*59,y+dy*59,55,24*power,angle*180/Math.PI,core*.65,'#F4D2A4');
+      this.ribbon(this.attacks,x+dx*36,y+dy*36,angle,44,4*power,phase*12,'#FFF0C2'+Math.round(core*210).toString(16).padStart(2,'0'));
+    }
+    for(let j=0;j<5;j++){
+      const u=packet?Math.min(1,.08+j*.11+progress*.62):.12+j*.17;
+      const turn=phase*9-j*1.8,spread=(j%2?1:-1)*u*u*length*.19;
+      const bend=spread+Math.sin(turn)*u*13;
+      const cx=x+dx*(37+length*u)-dy*bend,cy=y+dy*(37+length*u)+dx*bend;
+      const fade=(packet?Math.sin(Math.PI*progress):1)*(1-u*.65);
+      const size=(22+u*48)*power,roll=angle+Math.sin(turn)*(.13+u*.35);
+      this.artEffect(3,cx,cy,size*1.45,size*.9,roll*180/Math.PI,fade*.48,'#EBA077');
+      this.artEffect(3,cx-dy*size*.13,cy+dx*size*.13,size,size*.48,(roll+.2)*180/Math.PI,fade*.36,'#F4CDA0');
+      const inkAlpha=Math.round(fade*120).toString(16).padStart(2,'0');
+      this.ribbon(this.attacks,cx-dx*size*.3,cy-dy*size*.3,roll,size*.85,size*.16,turn,'#D78672'+inkAlpha);
+      this.ribbon(this.attacks,cx-dx*size*.3,cy-dy*size*.3,roll-.1,size*.68,size*.07,turn+.5,'#FFE3B2'+inkAlpha);
+    }
+    for(let j=0;j<5;j++){
+      const u=packet?Math.min(1,progress*.75+.2+j*.035):(phase*1.7+j*.21)%1;
+      const q=angle+Math.sin(j*9.3)*.28,distance=37+length*u;
+      const cx=x+Math.cos(q)*distance,cy=y+Math.sin(q)*distance;
+      const fade=Math.sin(Math.PI*u)*(packet?1-progress:1),alpha=Math.round(fade*185).toString(16).padStart(2,'0');
+      this.ribbon(this.attacks,cx,cy,q+.35,7+u*9,1.5*power,phase*8+j,'#F2C59D'+alpha);
     }
   }
   private drawEffects() {
     const g=this.fx;g.clear();
     for(const e of this.supportEffects){
       const t=1-e.life/e.max;
-      if(e.type==='cannon-impact'){
+      if(e.type==='flame'){
+        this.flameJet(e.x,e.y,Math.atan2(e.dy,e.dx),e.size,this.visualTime,1,t);
+      }else if(e.type==='cannon-impact'){
         const grow=1-Math.pow(1-t,3),r=e.size*grow;
         this.artEffect(5,e.x,e.y,30+e.size*1.7*grow,24+e.size*1.5*grow,t*17,(1-t)*.85,'#EDB080');
         for(let j=0;j<7;j++){
