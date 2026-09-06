@@ -1,270 +1,150 @@
 import assert from 'node:assert/strict';
-import { Combat, CHOICES } from '../assets/scripts/Combat.ts';
+import { Combat, SLOT_Y } from '../assets/scripts/Combat.ts';
+import { CAR_TYPES, CARS, MODS, RECIPES, getRecipe } from '../assets/scripts/Catalog.ts';
 
-function run(route,seed=137,speed=1,module='tesla'){
-  const m=new Combat();m.start(seed);
-  let peakEnemies=0;
-  const density=[];
-  for(let i=0;i<3000;i++){
-    if(m.phase==='reward'){const hp=m.hp;m.beginArrange();m.installFan();assert.equal(m.hp,hp,'Assembly must not heal');}
-    if(m.phase==='upgrade'){const hp=m.hp;m.choose(route);assert.equal(m.hp,hp,'Upgrade must not heal');}
-    if(m.phase==='supply'){
-      assert.equal(new Set(m.choices).size,3);assert.equal(m.choices.length,3);
-      assert.ok(m.choices.every(id=>CHOICES[id]&&(m.perks[id]||0)<2));
-      m.chooseSupply(m.choiceKind==='module'?module:m.choices[0]);
-    }
-    m.advance(1/30,speed);
-    m.effects.length=0;
-    assert.ok(m.enemies.length<=100);
-    peakEnemies=Math.max(peakEnemies,m.enemies.length);
-    if(i%30===29)density.push({time:Math.round(m.time),count:m.enemies.length});
-    if(['win','lose'].includes(m.phase))break;
+function enemy(id=900,x=200,y=40,hp=1000,kind=0){return {id,x,y,hp,maxHp:hp,kind,speed:0,flash:0};}
+function carOffer(m,type,index){m.phase='supply';m.offers=[{kind:'car',id:type}];assert.equal(m.chooseOffer(0),true);assert.equal(m.install(index),true);assert.equal(m.resumeWorkshop(),true);}
+function fixture(types=['cannon']){
+ const m=new Combat();m.start();m.enemies=[];m.spawnClock=-10000;m.supplyCount=6;m.nextScrap=Infinity;
+ for(let i=0;i<types.length;i++)if(types[i])carOffer(m,types[i],i);
+ return m;
+}
+function noBase(m){for(const clock of m.carClocks.values())clock.cooldown=100;}
+function face(m,target){for(let i=0;i<4;i++)if(m.slots[i])m.slots[i].angle=m.slots[i].previousAngle=Math.atan2(target.y-SLOT_Y[i],target.x);}
+function step(m,n=1,speed=1){for(let i=0;i<n;i++)m.advance(1/30,speed);}
+const arc=(a,b)=>Math.atan2(Math.sin(b-a),Math.cos(b-a));
+const singleVortex=(id,x,y)=>({id,x,y,dx:0,dy:0,life:10,maxLife:10,age:0,radius:76,tick:100,damage:13,kind:'fire',element:'fire'});
+const shell=(id,kind='cannon',extra={})=>({id,x:190,y:40,dx:390,dy:0,life:2,radius:12,kind,damage:30,element:'physical',hitIds:[],...extra});
+
+assert.equal(CAR_TYPES.length,5);assert.equal(Object.keys(MODS).length,6);assert.equal(RECIPES.length,11);
+const pairIds=new Set();
+for(const a of CAR_TYPES){assert.ok(CARS[a].name&&CARS[a].color);assert.equal(getRecipe(a,a),null);for(const b of CAR_TYPES)if(a!==b){const r=getRecipe(a,b);assert.ok(r,`${a}/${b} needs a real recipe`);pairIds.add(r.id);if(!r.directional)assert.equal(getRecipe(b,a).id,r.id);}}
+assert.equal(pairIds.size,11);assert.notEqual(getRecipe('flame','fan').id,getRecipe('fan','flame').id);
+
+// All five independent car actions work without an adjacent partner.
+const cannon=fixture();cannon.enemies=[enemy()];step(cannon);assert.equal(cannon.projectiles[0].kind,'cannon');step(cannon,20);assert.ok(cannon.enemies[0].hp<1000);
+const flame=fixture(['flame']);flame.enemies=[enemy()];step(flame);assert.equal(flame.enemies[0].hp,994);assert.ok(flame.effects.some(e=>e.type==='flame'&&e.carSlot===0));
+const fan=fixture(['fan']);fan.enemies=[enemy()];step(fan);assert.equal(fan.enemies[0].hp,1000);assert.ok(fan.enemies[0].x>200,'Fan only pushes, without fake damage or kills');assert.equal(fan.scrap,0);
+const tesla=fixture(['tesla']);tesla.enemies=[200,250,300,350].map((x,i)=>enemy(900+i,x));step(tesla);assert.deepEqual(tesla.enemies.map(e=>e.hp),[984,984,984,1000]);
+const cryo=fixture(['cryo']);cryo.enemies=[enemy(900,200),enemy(901,300)];step(cryo);assert.equal(cryo.enemies[0].hp,990);assert.ok(cryo.enemies[0].slow>0);assert.equal(cryo.enemies[1].hp,1000);
+const slowed=fixture(),normal=fixture();noBase(slowed);noBase(normal);slowed.enemies=[{...enemy(),speed:60,slow:1}];normal.enemies=[{...enemy(),speed:60}];step(slowed);step(normal);assert.equal(200-slowed.enemies[0].x,(200-normal.enemies[0].x)/2);
+
+// Independent slot origins, smooth shortest-arc tracking, lock hysteresis and real muzzle paths.
+const origins=fixture(['cannon','cannon','cannon','cannon']);origins.enemies=[enemy(900,200,200)];face(origins,origins.enemies[0]);step(origins);
+assert.equal(origins.projectiles.length,4);for(const p of origins.projectiles){const car=origins.slots[p.carSlot];assert.ok(Math.abs(arc(car.angle,Math.atan2(p.dy,p.dx)))<1e-10);assert.ok(Math.abs(p.y-p.dy/30-SLOT_Y[p.carSlot])<1e-10);}
+const turning=fixture();noBase(turning);turning.enemies=[enemy(900,Math.cos(-179*Math.PI/180)*230,40+Math.sin(-179*Math.PI/180)*230)];turning.slots[0].angle=179*Math.PI/180;
+const oldAngle=turning.slots[0].angle;step(turning);const angle=turning.slots[0].angle;assert.ok(arc(oldAngle,angle)>0&&arc(oldAngle,angle)<2*Math.PI/180);
+assert.ok(Math.abs(arc(oldAngle,turning.getRenderAngle(0)))<1e-10);assert.equal(turning.advance(1/60),0);assert.ok(Math.abs(arc(oldAngle,turning.getRenderAngle(0))-arc(oldAngle,angle)/2)<1e-10);
+turning.pause();assert.equal(turning.advance(.1,4),0);turning.resume();assert.equal(turning.getRenderAngle(0),angle,'Resume cannot jump to the previous angle');
+const lock=fixture();noBase(lock);lock.enemies=[enemy(900,200),enemy(901,-205)];step(lock);lock.enemies[0].x=202;lock.enemies[1].x=-198;step(lock);assert.ok(Math.abs(lock.slots[0].angle)<.01);lock.enemies[1].x=-90;step(lock);assert.ok(Math.abs(lock.slots[0].angle)>0&&Math.abs(lock.slots[0].angle)<=10/30+.00001);
+const wait=fixture();wait.enemies=[enemy(900,-230)];step(wait);assert.equal(wait.projectiles.length,0);step(wait,20);assert.ok(wait.projectiles.length>0,'Muzzle aligns before firing across the train');
+
+// Workshop ownership, adjacency, direction, empty slots and disposal are real state transitions.
+const layout=fixture(['flame','fan','tesla']);assert.deepEqual(layout.links.map(l=>l.recipe.id),['flame-fan','fan-tesla']);assert.equal(layout.links.length,2);assert.equal(layout.seenRecipes.size,0);
+assert.equal(layout.swapSlots(0,1),false);layout.openWorkshop();const frozenLayout=JSON.stringify({time:layout.time,slots:layout.slots});assert.equal(layout.advance(.1,4),0);assert.equal(JSON.stringify({time:layout.time,slots:layout.slots}),frozenLayout);
+layout.swapSlots(0,1);assert.deepEqual(layout.links.map(l=>l.recipe.id),['fan-flame','flame-tesla']);layout.swapSlots(1,3);assert.deepEqual(layout.links.map(l=>l.index),[2]);assert.equal(layout.links[0].recipe.id,'flame-tesla','An empty middle slot cannot transmit a link');
+assert.equal(layout.install(-1),false);layout.pendingCar='cryo';assert.equal(layout.resumeWorkshop(),false);assert.equal(layout.install(9),false);assert.equal(layout.discardOffer(),true);assert.equal(layout.discardOffer(),false);assert.equal(layout.resumeWorkshop(),true);
+const pending=fixture();pending.phase='supply';pending.offers=[{kind:'car',id:'flame'}];assert.equal(pending.chooseOffer(1),false);assert.equal(pending.chooseOffer(0),true);assert.equal(pending.chooseOffer(0),false);assert.equal(pending.offers.length,0);const removed=pending.slots[0].id;pending.install(0);assert.notEqual(pending.slots[0].id,removed);assert.equal(pending.slots[0].type,'flame');assert.equal(pending.install(0),false);assert.equal(pending.phase,'workshop');pending.resumeWorkshop();
+const changed=fixture(['flame','fan']);noBase(changed);changed.enemies=[enemy()];face(changed,changed.enemies[0]);step(changed);assert.equal(changed.seenRecipes.size,1);assert.ok(changed.vortices.length);changed.effects=[];changed.vortices=[];changed.openWorkshop();changed.swapSlots(1,3);changed.resumeWorkshop();step(changed,40);assert.equal(changed.links.length,0);assert.ok(!changed.effects.some(e=>e.type==='fire-vortex'),'An old edge must stop triggering after a swap');
+carOffer(changed,'cannon',0);assert.equal(changed.slots[0].type,'cannon');assert.equal(changed.links.length,0);
+
+const cooldown=fixture(['flame','fan']);noBase(cooldown);cooldown.enemies=[enemy()];face(cooldown,cooldown.enemies[0]);step(cooldown);
+const pairKey=[...cooldown.linkClocks.keys()][0], remaining=cooldown.linkClocks.get(pairKey);assert.ok(remaining>1);
+cooldown.effects=[];cooldown.vortices=[];cooldown.openWorkshop();cooldown.swapSlots(1,3);
+assert.equal(cooldown.links.length,0);assert.equal(cooldown.linkClocks.get(pairKey),remaining);assert.equal(cooldown.advance(.1,4),0);
+cooldown.swapSlots(3,1);cooldown.swapSlots(0,2);cooldown.swapSlots(1,3); // Move the complete pair to slots 2/3.
+assert.equal(cooldown.links[0].index,2);assert.equal(cooldown.linkClocks.get(pairKey),remaining,'Changing the edge index must not reset its cooldown');
+cooldown.resumeWorkshop();face(cooldown,cooldown.enemies[0]);step(cooldown);assert.ok(!cooldown.effects.some(e=>e.type==='fire-vortex'),'Reconnecting the same pair cannot farm an immediate linked shot');
+assert.ok(cooldown.linkClocks.get(pairKey)<remaining,'Pair cooldown advances only with combat time');
+cooldown.openWorkshop();cooldown.swapSlots(2,0);cooldown.swapSlots(3,1);cooldown.resumeWorkshop();face(cooldown,cooldown.enemies[0]);step(cooldown);
+assert.ok(!cooldown.effects.some(e=>e.type==='fire-vortex'),'Repeated workshop toggles still preserve cooldown');
+step(cooldown,35);assert.ok(cooldown.effects.some(e=>e.type==='fire-vortex'),'The retained cooldown still expires normally');
+const symmetric=fixture(['cannon','fan']);noBase(symmetric);symmetric.enemies=[enemy()];face(symmetric,symmetric.enemies[0]);step(symmetric);
+const symmetricKey=[...symmetric.linkClocks.keys()][0];symmetric.openWorkshop();symmetric.swapSlots(0,1);assert.ok(symmetric.linkClocks.has(symmetricKey),'Reversing a symmetric pair preserves the same cooldown');
+
+function applyMod(m,id){m.phase='supply';m.offers=[{kind:'mod',id}];return m.chooseOffer(0);}
+const mods=fixture(['cannon','cannon','fan']);const firstId=mods.slots[0].id;assert.equal(applyMod(mods,'caliber'),true);assert.deepEqual(mods.slots.slice(0,2).map(c=>c.level),[1,1]);applyMod(mods,'caliber');assert.equal(applyMod(mods,'caliber'),false);assert.ok(!mods.availableMods().includes('caliber'));
+mods.phase='combat';mods.openWorkshop();mods.swapSlots(0,3);assert.equal(mods.slots[3].id,firstId);assert.equal(mods.slots[3].level,2);mods.pendingCar='cannon';mods.install(3);assert.equal(mods.slots[3].level,0,'Replacement receives a fresh car, not the scrapped car level');mods.resumeWorkshop();
+assert.equal(applyMod(mods,'fuel'),false,'An absent target cannot receive a mod');mods.phase='combat';carOffer(mods,'flame',0);assert.equal(applyMod(mods,'resonance'),true);assert.equal(applyMod(mods,'resonance'),true);assert.equal(applyMod(mods,'resonance'),false);assert.equal(mods.linkLevel,2);
+const snapshot=fixture();snapshot.enemies=[enemy()];step(snapshot);const oldDamage=snapshot.projectiles[0].damage;applyMod(snapshot,'caliber');assert.equal(snapshot.projectiles[0].damage,oldDamage);snapshot.carClocks.get(snapshot.slots[0].id).cooldown=0;step(snapshot);assert.ok(snapshot.projectiles.some(p=>p.damage>oldDamage),'New attacks use the upgraded car; existing shells keep their snapshot');
+
+// Every recipe actually fires in combat, never during installation or preview.
+const recipeResults=[];
+for(const recipe of RECIPES){
+ const m=fixture([recipe.a,recipe.b]);noBase(m);m.enemies=[enemy(900,200,-22.5),enemy(901,250,-22.5),enemy(902,290,-22.5)];face(m,m.enemies[0]);
+ assert.equal(m.seenRecipes.size,0);m.openWorkshop();assert.equal(m.advance(.1,4),0);assert.equal(m.seenRecipes.size,0);m.resumeWorkshop();step(m);
+ assert.ok(m.seenRecipes.has(recipe.id));assert.equal(m.events.filter(e=>e.type==='combo_discovered').length,1);assert.ok(m.effects.some(e=>e.type==='discovery'&&e.recipeId===recipe.id));
+ const kinds=[...new Set([...m.projectiles.map(p=>p.kind),...m.vortices.map(v=>v.kind)])];step(m,55);
+ assert.ok(m.enemies.some(e=>e.hp<e.maxHp),`${recipe.id} must change actual enemy HP`);assert.equal(m.events.filter(e=>e.type==='combo_discovered').length,1);
+ recipeResults.push({id:recipe.id,kinds});
+}
+const burn=fixture();noBase(burn);burn.enemies=[enemy(900,200,40),enemy(901,260,40)];burn.projectiles=[shell(1,'burn-shell',{element:'fire',burnDamage:4})];burn.moveProjectiles(1/30);assert.deepEqual(burn.enemies.map(e=>e.hp),[970,970]);assert.ok(burn.enemies.every(e=>e.burn>0));step(burn,16);assert.ok(burn.enemies.every(e=>e.hp<970),'Burning payload continues with real periodic damage');
+const reignite=fixture();noBase(reignite);reignite.enemies=[enemy()];reignite.ignite(reignite.enemies[0],8);step(reignite,76);assert.equal(reignite.enemies[0].burn,0);reignite.ignite(reignite.enemies[0],2);assert.equal(reignite.enemies[0].burnDamage,2,'An expired strong burn cannot upgrade a later weaker damage snapshot');
+const pierce=fixture();noBase(pierce);pierce.enemies=[enemy(900,200),enemy(901,250)];pierce.projectiles=[shell(1,'pierce')];pierce.moveProjectiles(.2);assert.deepEqual(pierce.enemies.map(e=>e.hp),[970,970]);pierce.moveProjectiles(0);assert.deepEqual(pierce.enemies.map(e=>e.hp),[970,970],'A piercing shell hits each enemy at most once');
+const magnetic=fixture();noBase(magnetic);magnetic.enemies=[enemy(900,200,40,1000,2)];magnetic.projectiles=[shell(1,'magnetic')];magnetic.moveProjectiles(1/30);assert.equal(magnetic.enemies[0].hp,970);assert.ok(magnetic.enemies[0].armorBreak>0);
+const shatter=fixture();noBase(shatter);shatter.enemies=[enemy()];shatter.projectiles=[shell(1,'shatter',{element:'ice'})];shatter.moveProjectiles(1/30);assert.equal(shatter.enemies[0].hp,970);assert.ok(shatter.enemies[0].freeze>0);shatter.projectiles=[shell(2,'shatter',{element:'ice'})];shatter.moveProjectiles(1/30);assert.equal(shatter.enemies[0].hp,910,'A frozen target takes double shatter damage');
+const hotCold=fixture(['flame','cryo']);noBase(hotCold);hotCold.enemies=[{...enemy(900,200,-22.5),slow:2},enemy(901,260,-22.5)];face(hotCold,hotCold.enemies[0]);step(hotCold);assert.deepEqual(hotCold.enemies.map(e=>e.hp),[944,972],'Thermal shock rewards an existing cold status');
+const flameWind=fixture(['flame','fan']);noBase(flameWind);flameWind.enemies=[enemy()];face(flameWind,flameWind.enemies[0]);step(flameWind);assert.ok(flameWind.vortices.some(v=>v.element==='fire'&&Math.hypot(v.dx,v.dy)>0));
+const focused=fixture(['fan','flame']);noBase(focused);focused.enemies=[enemy(900,330,-85,1000,3),enemy(901,250,80)];focused.bossSpawned=true;face(focused,focused.enemies[0]);step(focused);assert.equal(focused.vortices.length,0);assert.equal(focused.boss.hp,969);assert.equal(focused.enemies[1].hp,1000,'Reversed order produces a narrow long beam, not a wide vortex');
+const arcBurn=fixture(['flame','tesla']);noBase(arcBurn);arcBurn.enemies=[150,200,250,300].map((x,i)=>enemy(900+i,x,-22.5));face(arcBurn,arcBurn.enemies[0]);step(arcBurn);assert.ok(arcBurn.enemies.every(e=>e.burn>0&&e.hp===983));
+const electric=fixture(['fan','tesla']);noBase(electric);electric.enemies=[enemy(900,200,-22.5),enemy(901,240,-22.5)];step(electric);assert.ok(electric.vortices.some(v=>v.element==='electric'&&v.dx===0&&v.dy===0));assert.notEqual(electric.enemies[1].y,-22.5,'An electric vortex really swirls nearby enemies');
+const blizzard=fixture(['fan','cryo']);noBase(blizzard);blizzard.enemies=[enemy(900,300,-22.5)];step(blizzard);assert.equal(blizzard.enemies[0].hp,988);assert.equal(blizzard.enemies[0].slow,3.4,'Blizzard reaches beyond the standalone cryo radius');
+const conduction=fixture(['tesla','cryo']);noBase(conduction);conduction.enemies=[enemy(900,200,-22.5),{...enemy(901,240,-22.5),slow:2},enemy(902,400,-22.5)];step(conduction);assert.equal(conduction.enemies[0].hp,984);assert.ok(conduction.enemies[0].freeze>0);assert.equal(conduction.enemies[1].hp,972);assert.equal(conduction.enemies[2].hp,1000);
+
+// Counter-elements, control immunity, finite nearest-only suction and kill accounting.
+for(const [kind,resisted,counter]of[[2,'physical','fire'],[4,'fire','ice'],[5,'electric','physical']]){
+ const m=fixture();const e=enemy(900,200,40,1000,kind);m.enemies=[e];m.hit(e,100,resisted,0,40);const first=1000-e.hp;m.hit(e,100,counter,0,40);assert.ok(first<100);assert.equal(e.hp,900-first);
+}
+const immune=fixture();noBase(immune);immune.enemies=[enemy(900,200,40,1000,3)];immune.bossSpawned=true;immune.chill(immune.boss,3,2);immune.push(immune.boss,0,40,100);immune.vortices=[{...singleVortex(2,210,40),tick:0}];step(immune);assert.equal(immune.boss.x,200);assert.equal(immune.boss.y,40);assert.ok(!(immune.boss.slow>0)&&!(immune.boss.freeze>0));assert.equal(immune.boss.hp,987);
+const one=fixture(),two=fixture();for(const m of[one,two]){noBase(m);m.enemies=[enemy(900,240,90)];m.vortices=[singleVortex(2,180,90)];}two.vortices.push(singleVortex(3,310,90));step(one);step(two);assert.deepEqual(one.enemies,two.enemies);assert.ok(Math.hypot(one.enemies[0].x-240,one.enemies[0].y-90)<=190/30+.00001);
+const eye=fixture();noBase(eye);eye.enemies=[enemy(900,180,90)];eye.vortices=[singleVortex(2,180,90)];step(eye);assert.ok(Number.isFinite(eye.enemies[0].x)&&Number.isFinite(eye.enemies[0].y));
+const credit=fixture();const victim=enemy(900,200,40,5);credit.enemies=[victim];credit.hit(victim,10,'physical',0,40);credit.hit(victim,10,'fire',0,40);assert.equal(credit.kills,1);assert.equal(credit.scrap,1);const dead=credit.effects.find(e=>e.type==='kill');assert.ok(Math.abs(Math.hypot(dead.dx,dead.dy)-1)<1e-10);
+const bossCredit=fixture();const bossVictim=enemy(900,200,40,5,3);bossCredit.enemies=[bossVictim];bossCredit.hit(bossVictim,10,'ice',0,40);assert.equal(bossCredit.scrap,5);
+const contact=fixture();noBase(contact);contact.hp=1;contact.enemies=[enemy(900,43,40)];step(contact);assert.equal(contact.phase,'lose');assert.equal(contact.endReason,'armor');assert.equal(contact.scrap,0);
+
+// Scrap comes only from real deaths; six rewards pause once each and then stop.
+function claimSequence(){
+ const m=new Combat();m.start();m.enemies=[];m.spawnClock=-10000;noBase(m);const cards=[];
+ for(const threshold of[8,24,48,80,120,170]){
+  while(m.scrap<threshold){const e=enemy(1000+m.scrap,200,40,1);m.enemies.push(e);m.hit(e,1,'physical',0,40);}
+  step(m);assert.equal(m.phase,'supply');assert.equal(m.supplyCount,cards.length+1);assert.equal(m.offers.length,3);
+  const carIds=m.offers.filter(o=>o.kind==='car').map(o=>o.id);assert.equal(new Set(carIds).size,carIds.length);
+  if(cards.length===0)assert.ok(carIds.includes('flame')&&carIds.includes('fan'));
+  if(cards.length<3)assert.ok(m.offers.every(o=>o.kind==='car'));
+  else {assert.equal(m.offers.filter(o=>o.kind==='mod').length,1);assert.ok(m.availableMods().includes(m.offers.find(o=>o.kind==='mod').id));}
+  cards.push(m.offers.map(o=>({...o})));const frozen=JSON.stringify(m);assert.equal(m.advance(.1,4),0);assert.equal(JSON.stringify(m),frozen);
+  m.chooseOffer(0);assert.equal(m.resumeWorkshop(),false);m.discardOffer();m.resumeWorkshop();
+ }
+ assert.equal(m.nextScrap,Infinity);for(let i=0;i<20;i++){const e=enemy(2000+i,200,40,1);m.enemies.push(e);m.hit(e,1,'physical',0,40);}step(m);assert.equal(m.phase,'combat');assert.equal(m.supplyCount,6);assert.equal(m.events.filter(e=>e.type==='supply_offer').length,6);return cards;
+}
+assert.deepEqual(claimSequence(),claimSequence(),'Identical seeds and decisions produce identical random offers');
+
+const capped=fixture();capped.enemies=[];for(let i=0;i<120;i++)capped.spawn();assert.equal(capped.enemies.length,99);noBase(capped);capped.time=60-1/30;step(capped);assert.equal(capped.enemies.length,100);assert.equal(capped.enemies.filter(e=>e.kind===3).length,1);step(capped);assert.equal(capped.events.filter(e=>e.type==='boss_spawn').length,1);
+const timed=fixture();noBase(timed);timed.time=80-1/30;timed.bossSpawned=true;timed.enemies=[enemy(900,285,200,1400,3)];step(timed);assert.equal(timed.phase,'lose');assert.equal(timed.endReason,'timeout');
+const bossWin=fixture();noBase(bossWin);bossWin.bossSpawned=true;bossWin.enemies=[enemy(900,200,40,5,3)];bossWin.projectiles=[shell(1)];step(bossWin);assert.equal(bossWin.phase,'win');assert.equal(bossWin.endReason,'boss');
+const charge=fixture();noBase(charge);charge.bossSpawned=true;charge.enemies=[enemy(900,285,200,1400,3)];charge.bossClock=4.5-1/30;step(charge);assert.equal(charge.hp,84);assert.ok(charge.effects.some(e=>e.type==='slam'));step(charge);assert.ok(charge.bossCharge>0&&charge.bossCharge<1);
+
+function run(speed=1){
+ const m=new Combat();m.start();let total=0;const rewardTimes=[];
+ for(let i=0;i<2500;i++){
+  if(m.phase==='supply'){
+   rewardTimes.push(+m.time.toFixed(2));
+   const wanted=['flame','fan','tesla','cryo'].find(t=>!m.slots.some(c=>c?.type===t)&&m.offers.some(o=>o.kind==='car'&&o.id===t));
+   let index=m.supplyCount<=3&&wanted?m.offers.findIndex(o=>o.id===wanted):m.offers.findIndex(o=>o.kind==='mod');
+   if(index<0)index=wanted?m.offers.findIndex(o=>o.id===wanted):0;
+   assert.equal(m.chooseOffer(index),true);
   }
-  m.testStats={peakEnemies,density};
-  return m;
+  if(m.phase==='workshop'){const empty=m.slots.indexOf(null);if(empty>=0)m.install(empty);else m.discardOffer();assert.equal(m.resumeWorkshop(),true);}
+  total+=m.advance(1/30,speed);m.effects=[];assert.ok(m.enemies.length<=100);
+  if(m.phase==='win'||m.phase==='lose')break;
+ }
+ assert.ok(Math.abs(total-m.time)<1e-9);m.testRewardTimes=rewardTimes;return m;
 }
-const paused=new Combat();paused.start();
-for(let i=0;i<240;i++)paused.advance(1/30);
-assert.equal(paused.phase,'reward');
-const frozen=JSON.stringify({time:paused.time,enemies:paused.enemies,hp:paused.hp});
-for(let i=0;i<120;i++)paused.advance(1/30);
-assert.equal(JSON.stringify({time:paused.time,enemies:paused.enemies,hp:paused.hp}),frozen);
-paused.pause();paused.resume();assert.equal(paused.phase,'reward');
-paused.beginArrange();paused.pause();paused.resume();assert.equal(paused.phase,'arrange');
-paused.installFan();assert.equal(paused.form,'tornado');
-for(let i=0;i<15&&!paused.vortices.length;i++)paused.advance(1/30);
-assert.ok(paused.vortices.length>0,'Installing fan changes actual attacks after the muzzle aligns');
-const once=paused.events.filter(e=>e.type==='fan_installed').length;paused.installFan();assert.equal(paused.events.filter(e=>e.type==='fan_installed').length,once);
-
-function stationaryEnemy(x=240,y=90,hp=100){return {id:900,x,y,hp,maxHp:hp,speed:0,kind:0,flash:0};}
-function stationaryVortex(id,x,y){return {id,x,y,dx:0,dy:0,life:10,maxLife:10,age:0,radius:65,tick:100,damage:13};}
-function isolated(){
-  const m=new Combat();m.start();m.enemies=[stationaryEnemy()];m.vortices=[];
-  // Isolate the actual fixed-step movement/damage from spawning and firing.
-  m.fireClock=100;m.spawnClock=-100;return m;
-}
-const arc=(from,to)=>Math.atan2(Math.sin(to-from),Math.cos(to-from));
-const atAngle=(id,angle,radius=230)=>({...stationaryEnemy(Math.cos(angle)*radius,40+Math.sin(angle)*radius),id});
-const turning=isolated();turning.turretAngle=179*Math.PI/180;
-turning.enemies=[atAngle(900,-179*Math.PI/180)];
-const oldAngle=turning.turretAngle;turning.advance(1/30);
-assert.ok(arc(oldAngle,turning.turretAngle)>0&&arc(oldAngle,turning.turretAngle)<2*Math.PI/180,'179 to -179 must take the short positive arc');
-const currentAngle=turning.turretAngle;
-assert.ok(Math.abs(arc(oldAngle,turning.renderTurretAngle))<1e-10,'Render starts at the previous fixed step');
-assert.equal(turning.advance(1/60),0);
-assert.ok(Math.abs(arc(oldAngle,turning.renderTurretAngle)-arc(oldAngle,currentAngle)/2)<1e-10,'Rendering interpolates across the angle seam');
-turning.pause();assert.equal(turning.renderTurretAngle,turning.turretAngle);
-assert.equal(turning.advance(.1,4),0);assert.equal(turning.turretAngle,currentAngle);
-turning.resume();assert.equal(turning.renderTurretAngle,currentAngle,'Resume must not interpolate back to a pre-pause angle');
-turning.start();assert.equal(turning.turretAngle,0);assert.equal(turning.renderTurretAngle,0);
-assert.deepEqual(turning.aim,{x:220,y:40});
-
-for(const [stopTime,phase] of [[8,'reward'],[25,'upgrade']]){
-  const modal=isolated();modal.time=stopTime-1/30;modal.rewarded=stopTime===25;modal.nextWave=4;
-  modal.enemies=[atAngle(900,1)];modal.advance(1/30);
-  assert.equal(modal.phase,phase);assert.ok(modal.turretAngle>0);
-  const stoppedAngle=modal.renderTurretAngle;
-  if(phase==='reward'){modal.beginArrange();assert.equal(modal.renderTurretAngle,stoppedAngle);modal.installFan();}
-  else modal.choose('giant');
-  assert.equal(modal.renderTurretAngle,stoppedAngle,'Leaving a reward or upgrade must preserve the displayed angle');
-}
-
-const lock=isolated();lock.enemies=[stationaryEnemy(200,40),{...stationaryEnemy(-205,40),id:901}];
-lock.advance(1/30);assert.ok(lock.aim.x>0);
-lock.enemies[0].x=202;lock.enemies[1].x=-198;lock.advance(1/30);
-assert.ok(lock.aim.x>0,'Small changes in closest enemy must not reverse the turret');
-lock.enemies[1].x=-100;lock.advance(1/30);
-assert.ok(lock.aim.x<0,'A substantially closer threat must break target lock');
-assert.ok(Math.abs(lock.turretAngle)<=10/30+.00001,'Switching sides must obey turn speed');
-lock.enemies[1].hp=0;lock.advance(1/30);assert.ok(lock.aim.x>0,'Dead locked targets must be released');
-
-const waiting=isolated();waiting.form='tornado';waiting.fireClock=0;waiting.enemies=[atAngle(900,Math.PI)];
-waiting.advance(1/30);assert.equal(waiting.vortices.length,0,'Do not fire away from a target while rotating');
-for(let i=0;i<20&&!waiting.vortices.length;i++)waiting.advance(1/30);
-assert.ok(waiting.vortices.length>0,'Rotation must settle and fire promptly');
-assert.ok(Math.abs(arc(waiting.turretAngle,Math.PI))<.2);
-for(const form of ['tornado','twin','giant']){
-  const shot=isolated();shot.form=form;shot.fireClock=0;shot.enemies=[atAngle(900,.3)];shot.advance(1/30);
-  assert.equal(shot.vortices.length,form==='twin'?2:1);
-  const offsets=form==='twin'?[-.22,.22]:[0];
-  shot.vortices.forEach((v,i)=>assert.ok(Math.abs(arc(shot.turretAngle+offsets[i],Math.atan2(v.dy,v.dx)))<1e-10,'Projectile direction must follow the muzzle'));
-}
-const flame=isolated();flame.fireClock=0;flame.enemies=[atAngle(900,.35,200),atAngle(901,-.25,225),atAngle(902,.7,230)];
-flame.advance(1/30);
-assert.equal(flame.enemies.find(e=>e.id===901).hp,95,'Flame must damage inside the actual muzzle cone');
-assert.equal(flame.enemies.find(e=>e.id===902).hp,100,'Flame must not use the unsmoothed target direction');
-
-const clocked=isolated();assert.equal(clocked.advance(1,4),.4,'Clamp real frame time before applying speed');
-assert.ok(Math.abs(clocked.time-.4)<1e-10);
-assert.equal(clocked.advance(Number.NaN,4),0);assert.equal(clocked.advance(-1,4),0);
-for(const speed of [1,2,4]){
-  const gate=new Combat();gate.start();let simulated=0;
-  while(gate.phase==='combat')simulated+=gate.advance(.1,speed);
-  assert.equal(gate.phase,'reward');assert.ok(Math.abs(gate.time-8)<1e-9);assert.ok(Math.abs(simulated-8)<1e-9);
-  const stopped=gate.time;assert.equal(gate.advance(.1,speed),0);
-  gate.beginArrange();assert.equal(gate.advance(.1,speed),0);assert.equal(gate.time,stopped);
-  gate.installFan();while(gate.phase==='combat')simulated+=gate.advance(.1,speed);
-  assert.equal(gate.phase,'supply');assert.equal(gate.choiceKind,'module');assert.ok(Math.abs(gate.time-18)<1e-9);
-  assert.equal(gate.advance(.1,speed),0);gate.chooseSupply('tesla');
-  while(gate.phase==='combat')simulated+=gate.advance(.1,speed);
-  assert.equal(gate.phase,'upgrade');assert.ok(Math.abs(gate.time-25)<1e-9);assert.ok(Math.abs(simulated-25)<1e-9);
-  assert.equal(gate.advance(.1,speed),0);
-  gate.choose('twin');gate.pause();assert.equal(gate.advance(.1,speed),0);gate.resume();
-  const before=gate.time;assert.ok(gate.advance(1/30,speed)>0);assert.ok(gate.time>before);
-}
-const single=isolated(), overlapping=isolated();
-single.vortices=[stationaryVortex(2,180,90)];
-overlapping.vortices=[stationaryVortex(2,180,90),stationaryVortex(3,310,90)];
-single.advance(1/30);overlapping.advance(1/30);
-assert.deepEqual(single.enemies,overlapping.enemies,'A farther overlapping vortex must not stack movement force');
-const pulled=single.enemies[0];
-assert.ok(Math.hypot(pulled.x-180,pulled.y-90)<60,'Suction must close distance');
-assert.notEqual(pulled.y,90,'Suction must include a visible tangential component');
-assert.ok(Math.hypot(pulled.x-240,pulled.y-90)<=190/30+.00001,'Suction displacement must be bounded');
-const eye=isolated();eye.enemies=[stationaryEnemy(180,90)];eye.vortices=[stationaryVortex(2,180,90)];
-eye.advance(1/30);assert.ok(Number.isFinite(eye.enemies[0].x)&&Number.isFinite(eye.enemies[0].y),'The eye must not divide by zero');
-const expired=isolated();expired.vortices=[{...stationaryVortex(2,180,90),life:.01}];
-expired.advance(1/30);assert.equal(expired.enemies[0].x,240,'Expired vortices must stop pulling');
-
-const snapshot=isolated();snapshot.form='tornado';snapshot.vortex(0);
-const old=snapshot.vortices[0];old.x=240;old.y=90;old.dx=old.dy=0;
-snapshot.phase='upgrade';const beforeChoiceHp=snapshot.hp;snapshot.choose('giant');snapshot.fireClock=100;
-assert.equal(snapshot.hp,beforeChoiceHp);assert.equal(old.damage,13,'Existing vortex damage is frozen');
-snapshot.vortex(0);assert.equal(snapshot.vortices[1].damage,18,'New giant vortices get giant damage');
-snapshot.vortices[1].x=-1000;
-snapshot.advance(1/30);assert.equal(snapshot.enemies[0].hp,87,'First tick must use old damage after upgrade');
-snapshot.advance(1/30);assert.equal(snapshot.enemies[0].hp,87,'Damage must not apply every frame');
-snapshot.pause();const frozenAttack=JSON.stringify({time:snapshot.time,hp:snapshot.hp,enemies:snapshot.enemies,vortices:snapshot.vortices});
-for(let i=0;i<30;i++)snapshot.advance(1/30);
-assert.equal(JSON.stringify({time:snapshot.time,hp:snapshot.hp,enemies:snapshot.enemies,vortices:snapshot.vortices}),frozenAttack,'Pause must freeze suction, damage, age and lifetime');
-snapshot.resume();for(let i=0;i<3;i++)snapshot.advance(1/30);
-assert.equal(snapshot.enemies[0].hp,74,'The next periodic tick must retain its damage snapshot');
-const killed=isolated();killed.enemies=[stationaryEnemy(245,90,13)];killed.vortices=[{...stationaryVortex(2,240,90),tick:0}];
-killed.advance(1/30);assert.equal(killed.kills,1);assert.equal(killed.enemies.length,0);
-const death=killed.effects.find(e=>e.type==='kill');
-assert.ok(death&&Math.abs(Math.hypot(death.dx,death.dy)-1)<.00001,'Death ejection must have a normalized direction');
-assert.equal(death.enemyKind,0);assert.ok(death.dx>0,'Death ejection must point outward from the vortex');
-assert.ok(killed.effects.some(e=>e.type==='hit'),'Real damage must emit hit feedback');
-
-function supply(model,id,kind='perk'){
-  model.phase='supply';model.choiceKind=kind;model.choices=[id];model.chooseSupply(id);
-}
-const tesla=isolated();tesla.enemies=[150,200,250,300].map((x,i)=>({...stationaryEnemy(x,-220),id:900+i}));
-supply(tesla,'tesla','module');
-for(let i=0;i<35;i++)tesla.advance(1/30);
-assert.ok(tesla.enemies.every(e=>e.hp===100),'Tesla waits for its actual cooldown');
-tesla.advance(1/30);
-assert.deepEqual(tesla.enemies.map(e=>e.hp),[82,82,82,100],'Tesla damages exactly the nearest three enemies');
-assert.equal(tesla.effects.filter(e=>e.type==='tesla').length,3);
-assert.ok(tesla.effects.filter(e=>e.type==='tesla').every(e=>e.x===0&&e.y===-220&&e.dx>0&&e.dy===0));
-const moduleState=JSON.stringify(tesla);tesla.chooseSupply('repair');assert.equal(JSON.stringify(tesla),moduleState,'Repeated or out-of-phase module choices do nothing');
-tesla.phase='supply';tesla.choiceKind='module';tesla.choices=['repair'];tesla.chooseSupply('repair');assert.equal(tesla.module,'tesla','A run can install only one support module');
-
-const cryo=isolated();cryo.enemies=[stationaryEnemy(150,-220),{...stationaryEnemy(360,-220),id:901}];
-supply(cryo,'cryo','module');for(let i=0;i<60;i++)cryo.advance(1/30);
-assert.equal(cryo.enemies[0].hp,88);assert.equal(cryo.enemies[0].slow,2.4);assert.equal(cryo.enemies[1].hp,100);
-assert.ok(cryo.effects.some(e=>e.type==='cryo'&&e.x===0&&e.y===-220&&e.size===320));
-const slowed=isolated(),normal=isolated();
-slowed.enemies=[{...stationaryEnemy(200,40),speed:60,slow:1}];normal.enemies=[{...stationaryEnemy(200,40),speed:60}];
-slowed.advance(1/30);normal.advance(1/30);
-assert.ok(Math.abs((200-slowed.enemies[0].x)*2-(200-normal.enemies[0].x))<1e-9,'Slow halves real enemy movement');
-
-const repair=isolated();repair.hp=97;supply(repair,'repair','module');
-for(let i=0;i<120;i++)repair.advance(1/30);
-assert.equal(repair.hp,100);assert.ok(repair.effects.some(e=>e.type==='repair'&&e.x===0&&e.y===-220&&e.size===3),'Repair feedback reports actual healing at the cap');
-repair.hp=80;repair.effects=[];for(let i=0;i<120;i++)repair.advance(1/30);
-assert.equal(repair.hp,85);assert.equal(repair.effects.find(e=>e.type==='repair').size,5);
-
-const modded=isolated();modded.form='tornado';modded.vortex(0);
-const originalVortex={...modded.vortices[0]};supply(modded,'heat');supply(modded,'reach');modded.vortex(0);
-assert.equal(modded.vortices[0].damage,originalVortex.damage);assert.equal(modded.vortices[0].radius,originalVortex.radius);
-assert.equal(modded.vortices[1].damage,13*1.25);assert.equal(modded.vortices[1].radius,65*1.18,'Heat and reach affect newly created real attacks');
-const heatedFlame=isolated();heatedFlame.enemies=[stationaryEnemy(230,40)];heatedFlame.fireClock=0;supply(heatedFlame,'heat');heatedFlame.advance(1/30);
-assert.equal(heatedFlame.enemies[0].hp,93.75,'Heat also changes real flame damage');
-const fed=isolated(),unfed=isolated();
-for(const model of [fed,unfed]){model.enemies=[stationaryEnemy(230,40,100000)];model.form='tornado';model.fireClock=0;}
-supply(fed,'feed');for(let i=0;i<60;i++){fed.advance(1/30);unfed.advance(1/30);}
-assert.ok(fed.effects.filter(e=>e.type==='fire').length>unfed.effects.filter(e=>e.type==='fire').length,'Feed increases actual shot frequency');
-const clockwork=isolated();clockwork.hp=80;supply(clockwork,'repair','module');supply(clockwork,'overclock');
-for(let i=0;i<90;i++)clockwork.advance(1/30);assert.equal(clockwork.hp,85,'Overclock brings the support action forward to three seconds');
-
-const blast=isolated();blast.perks.rupture=1;
-blast.enemies=[stationaryEnemy(200,40,5),{...stationaryEnemy(250,40,10),id:901},{...stationaryEnemy(335,40),id:902}];
-blast.hurt(blast.enemies[0],5,1,0);
-assert.equal(blast.kills,2);assert.equal(blast.enemies[2].hp,100,'Splash kills must not recursively explode');
-assert.equal(blast.effects.filter(e=>e.type==='blast').length,1);assert.equal(blast.effects.find(e=>e.type==='blast').size,90);
-const armored=isolated();armored.hp=92;supply(armored,'armor');assert.equal(armored.maxHp,125);assert.equal(armored.hp,117);
-supply(armored,'armor');assert.equal(armored.maxHp,150);assert.equal(armored.hp,142);
-supply(armored,'armor');assert.equal(armored.perks.armor,2);assert.equal(armored.maxHp,150,'Perks cannot exceed level two');
-for(const id of ['heat','feed','reach','rupture','overclock']){
-  const limit=isolated();supply(limit,id);supply(limit,id);supply(limit,id);assert.equal(limit.perks[id],2);
-}
-const invalid=isolated();invalid.phase='supply';invalid.choiceKind='perk';invalid.choices=['heat','feed','armor'];
-const illegalState=JSON.stringify(invalid);invalid.chooseSupply('repair');assert.equal(JSON.stringify(invalid),illegalState,'An unoffered card must do nothing');
-const deckA=isolated(),deckB=isolated();
-for(const deck of [deckA,deckB]){deck.supplyStage=1;deck.perks.heat=2;deck.offerSupply();}
-assert.deepEqual(deckA.choices,deckB.choices);assert.equal(new Set(deckA.choices).size,3);assert.ok(!deckA.choices.includes('heat'));
-assert.ok(deckA.choices.every(id=>CHOICES[id]&&!['tesla','cryo','repair'].includes(id)),'The perk deck contains three legal uncapped cards');
-const supplyFreeze=JSON.stringify(deckA);assert.equal(deckA.advance(.1,4),0);assert.equal(JSON.stringify(deckA),supplyFreeze,'Supply freezes RNG, timers, enemies and attacks');
-deckA.pause();deckA.resume();assert.equal(deckA.phase,'supply');
-
-const bossEnemy=(hp=1000)=>({...stationaryEnemy(285,260,hp),kind:3});
-const immune=isolated();immune.enemies=[{...bossEnemy(),x:180,y:90}];immune.bossSpawned=true;
-immune.vortices=[{...stationaryVortex(2,190,90),tick:0}];immune.advance(1/30);
-assert.equal(immune.boss.hp,987);assert.equal(immune.boss.x,180);assert.equal(immune.boss.y,90,'Boss takes real damage but no pull or knockback');
-const icyBoss=isolated();icyBoss.enemies=[{...bossEnemy(),x:180,y:-220}];icyBoss.bossSpawned=true;icyBoss.module='cryo';icyBoss.supportClock=0;icyBoss.advance(1/30);
-assert.equal(icyBoss.boss.hp,988);assert.equal(icyBoss.boss.slow,0,'Boss is immune to cryo control');
-const priority=isolated();priority.enemies=[stationaryEnemy(80,40),{...bossEnemy(),id:901}];priority.bossSpawned=true;priority.advance(1/30);
-assert.deepEqual(priority.aim,{x:285,y:260},'Main cannon prioritizes the boss');
-const slammed=isolated();slammed.enemies=[bossEnemy()];slammed.bossSpawned=true;slammed.bossClock=4.5-1/30;slammed.advance(1/30);
-assert.equal(slammed.hp,84);assert.ok(slammed.effects.some(e=>e.type==='slam'));assert.equal(slammed.bossCharge,0);
-slammed.advance(1/30);assert.ok(slammed.bossCharge>0&&slammed.bossCharge<1);
-const victory=isolated();victory.enemies=[bossEnemy(13)];victory.bossSpawned=true;
-victory.vortices=[{...stationaryVortex(2,285,260),tick:0}];victory.advance(1/30);
-assert.equal(victory.phase,'win');assert.equal(victory.endReason,'boss');assert.equal(victory.boss,null);
-const timed=isolated();timed.time=90-1/30;timed.bossSpawned=true;timed.enemies=[bossEnemy()];timed.advance(1/30);
-assert.equal(timed.phase,'lose');assert.equal(timed.endReason,'timeout');assert.ok(timed.boss.hp>0);
-const sixty=isolated();sixty.time=60-1/30;sixty.rewarded=true;sixty.upgraded=true;sixty.supplyStage=3;sixty.nextWave=4;sixty.advance(1/30);
-assert.equal(sixty.phase,'combat','Surviving sixty seconds no longer wins the run');
-const full=isolated();full.enemies=[];for(let i=0;i<120;i++)full.spawn();assert.equal(full.enemies.length,99);
-full.time=70-1/30;full.rewarded=true;full.upgraded=true;full.supplyStage=3;full.nextWave=4;full.advance(1/30);
-assert.equal(full.enemies.length,100);assert.equal(full.enemies.filter(e=>e.kind===3).length,1);
-assert.ok(full.effects.some(e=>e.type==='boss'));full.advance(1/30);assert.equal(full.enemies.length,100);
-assert.equal(full.events.filter(e=>e.type==='boss_spawn').length,1,'Boss admission at entity cap occurs exactly once');
-
-const results=[];
-for(const route of ['twin','giant']){
-  const a=run(route), b=run(route);
-  assert.equal(a.phase,'win',`default ${route} route should be completable`);
-  assert.equal(a.form,route);assert.ok(a.kills>100,'Must visibly clear a substantial wave');
-  assert.deepEqual({hp:a.hp,kills:a.kills,events:a.events},{hp:b.hp,kills:b.kills,events:b.events});
-  assert.equal(a.events.filter(e=>e.type==='upgrade_pick').length,1);
-  assert.equal(a.events.filter(e=>e.type==='run_end').length,1);
-  assert.deepEqual(a.events.filter(e=>e.type==='wave').map(e=>e.value),['5','21','45','50'],'Each authored wave warning must occur exactly once');
-  assert.equal(a.events.find(e=>e.type==='wind_reward').time.toFixed(2),'8.00');
-  assert.equal(a.events.find(e=>e.type==='upgrade_offer').time.toFixed(2),'25.00');
-  assert.deepEqual(a.events.filter(e=>e.type==='supply_offer').map(e=>Math.round(e.time)),[18,40,58]);
-  assert.equal(a.events.filter(e=>e.type==='supply_pick').length,3);
-  assert.equal(a.events.filter(e=>e.type==='boss_spawn').length,1);
-  assert.equal(a.events.find(e=>e.type==='boss_spawn').time.toFixed(2),'70.00');
-  assert.ok(a.time>73&&a.time<90,'Boss should take several seconds to defeat before the timeout');
-  assert.equal(a.boss,null);assert.equal(a.endReason,'boss');
-  assert.ok(a.testStats.peakEnemies>=20,'Baseline must retain a substantial actual wave');
-  assert.ok(a.testStats.peakEnemies<100,'Baseline should not spend its run at the entity cap');
-  results.push({route,result:a.phase,hp:a.hp,kills:a.kills,time:Number(a.time.toFixed(2)),peakEnemies:a.testStats.peakEnemies,
-    densityAt:a.testStats.density.filter(s=>[8,11,25,29,45,50,57,60].includes(s.time))});
-  const state=m=>({phase:m.phase,time:m.time,hp:m.hp,maxHp:m.maxHp,kills:m.kills,seed:m.seed,events:m.events,enemies:m.enemies,vortices:m.vortices,turretAngle:m.turretAngle,module:m.module,perks:m.perks,choices:m.choices,bossCharge:m.bossCharge,bossSpawned:m.bossSpawned,endReason:m.endReason});
-  for(const speed of [2,4])assert.deepEqual(state(run(route,137,speed)),state(a),`${speed}x must preserve the identical fixed-step outcome for ${route}`);
-  a.start(27);assert.equal(a.time,0);assert.equal(a.form,'flame');assert.equal(a.hp,100);assert.equal(a.vortices.length,0);
-  assert.equal(a.module,'none');assert.equal(a.maxHp,100);assert.equal(a.boss,null);assert.equal(a.bossSpawned,false);
-  assert.equal(a.bossCharge,0);assert.equal(a.endReason,'');assert.deepEqual(a.perks,{});assert.deepEqual(a.choices,[]);
-  for(const module of ['cryo','repair']){
-    const alternative=run(route,137,1,module);assert.equal(alternative.phase,'win',`${route}/${module} must be completable`);
-    assert.ok(alternative.time>73&&alternative.time<90);
-    results.push({route,module,hp:alternative.hp,maxHp:alternative.maxHp,time:+alternative.time.toFixed(2),kills:alternative.kills});
-  }
-}
-const loss=new Combat();loss.start();loss.hp=1;loss.enemies=[{id:900,x:43,y:40,hp:100,maxHp:100,speed:30,kind:0,flash:0}];loss.advance(1/30);assert.equal(loss.phase,'lose');
-assert.equal(loss.kills,0,'Contact damage must not award a fake kill');
-assert.equal(loss.endReason,'armor');
-console.log(JSON.stringify({checks:'shortest arc/render interpolation/target lock/turn limit/alignment/projectile and flame direction/1x-2x-4x determinism/returned simulated time/modal speed stops/pause/reward/assembly/nearest bounded suction/damage snapshot/tesla/cryo/repair/six real perks/caps/legal deterministic cards/supply freeze/boss immunity/priority/slam/cap admission/victory/timeout/no sixty-second win/six loadouts/restart/death',results},null,2));
+const result=run();assert.equal(result.phase,'win');assert.equal(result.endReason,'boss');assert.ok(result.time>63&&result.time<80);assert.equal(result.supplyCount,6);assert.ok(result.hp>0);assert.equal(result.events.filter(e=>e.type==='boss_spawn').length,1);
+assert.deepEqual(result.slots.map(c=>c.type),['cannon','flame','fan','tesla']);
+const state=m=>({phase:m.phase,time:m.time,hp:m.hp,kills:m.kills,scrap:m.scrap,seed:m.seed,slots:m.slots,linkLevel:m.linkLevel,projectiles:m.projectiles,vortices:m.vortices,enemies:m.enemies,events:m.events,supplyCount:m.supplyCount,seen:[...m.seenRecipes],rewardTimes:m.testRewardTimes});
+for(const speed of[2,4])assert.deepEqual(state(run(speed)),state(result),`${speed}x preserves all fixed-step combat and random reward outcomes`);
+const summary={result:result.phase,time:+result.time.toFixed(2),hp:result.hp,kills:result.kills,scrap:result.scrap,cars:result.slots.map(c=>({type:c.type,level:c.level})),linkLevel:result.linkLevel,links:result.links.map(l=>l.recipe.id),rewardTimes:result.testRewardTimes};
+result.start(27);assert.equal(result.time,0);assert.equal(result.hp,100);assert.equal(result.scrap,0);assert.equal(result.supplyCount,0);assert.equal(result.pendingCar,null);assert.equal(result.bossSpawned,false);assert.equal(result.endReason,'');assert.equal(result.seenRecipes.size,0);assert.equal(result.slots.filter(Boolean).length,1);assert.equal(result.slots[0].type,'cannon');assert.equal(result.projectiles.length,0);assert.equal(result.vortices.length,0);assert.equal(result.linkLevel,0);
+result.seedSeenRecipes(['flame-fan','bogus']);assert.deepEqual([...result.seenRecipes],['flame-fan']);result.start();assert.equal(result.seenRecipes.size,0);
+console.log(JSON.stringify({checks:'5 independent cars / 11 actual recipes / adjacency-order-empty-replacement / mods follow cars and cap / pending and repeat protection / battle-only discoveries / resistance and control immunity / nearest bounded suction / real scrap and six rewards / smooth independent muzzles / pause-restart / 1-2-4 determinism / boss cap-victory-timeout',recipes:recipeResults,summary},null,2));

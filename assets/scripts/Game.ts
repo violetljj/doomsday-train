@@ -1,6 +1,7 @@
 import { _decorator, Component, Node, Graphics, Color, UITransform, Label, Vec3, EventTouch,
   resources, SpriteFrame, Sprite, view, ResolutionPolicy, game, Game as EngineGame, Layers, profiler, Material, gfx } from 'cc';
-import { Combat, CHOICES, ChoiceId } from './Combat';
+import { Combat } from './Combat';
+import { CARS, MODS, RECIPES, getRecipe, CarType, ModId } from './Catalog';
 const { ccclass } = _decorator;
 const C = { ink: '#101E22', panel: '#192C30', edge: '#355052', gold: '#FFB54D', cream: '#F3E6CD', muted: '#91A7A4', teal: '#70D9C0', red: '#F4785F' };
 type Particle = { x: number; y: number; vx: number; vy: number; life: number; max: number; size: number; color: string };
@@ -28,7 +29,12 @@ export class Game extends Component {
   private audio: any = null; private sound = true; private lowMotion = false;
   private frameCount = 0; private frameSeconds = 0; private fps = 0;
   private debugSpeed = 1;
-  private supportArt: Node | null = null;
+  private carArt = new Map<number,Node>();
+  private selectedSlot = -1;
+  private atlas = false; private atlasPage = 0;
+  private knownRecipes = new Set<string>(); private newRecipes = new Set<string>();
+  private carIcons = new Map<CarType,SpriteFrame>();
+  private readonly slotY = [40,-85,-210,-335];
   private supportEffects: {type:string;x:number;y:number;dx:number;dy:number;size:number;life:number;max:number}[] = [];
 
   onLoad() {
@@ -52,7 +58,7 @@ export class Game extends Component {
     this.labels.kills = this.label(this.node, '击破  0', 212, 475, 23, C.gold, 175);
     this.labels.stage = this.label(this.node, '', 0, 415, 22, C.teal, 650);
     this.labels.form = this.label(this.node, '', 0, -442, 25, C.cream, 620);
-    this.labels.hint = this.label(this.node, '', 0, -479, 22, C.muted, 640);
+    this.labels.hint = this.label(this.node, '', -307, -484, 21, C.muted, 425, 'left');
     this.labels.footer = this.label(this.node, '声音 开', -270, -577, 21, C.muted, 162);
     this.labels.motion = this.label(this.node, '镜头 开', -90, -577, 21, C.muted, 162);
     this.labels.speed = this.label(this.node, '倍速 ×1', 90, -577, 21, C.gold, 162);
@@ -66,27 +72,35 @@ export class Game extends Component {
     this.node.on(Node.EventType.TOUCH_END, this.touch, this);
     game.on(EngineGame.EVENT_HIDE, this.hide, this);
     try { const saved = globalThis.localStorage?.getItem('doomsday-settings'); if(saved){const v=JSON.parse(saved);this.sound=v.sound!==false;this.lowMotion=!!v.lowMotion;} } catch {}
+    try {const saved=JSON.parse(globalThis.localStorage?.getItem('doomsday-recipes-v03')||'[]');
+      if(Array.isArray(saved))for(const id of saved)if(RECIPES.some(r=>r.id===id))this.knownRecipes.add(id);}catch{}
     resources.load('art/locomotive/spriteFrame', SpriteFrame, (err,frame) => {
       if (err || !this.isValid) return;
       this.loco = this.sprite('Locomotive', frame, 174, 261, this.trainLayer); this.loco.setPosition(0,235,0);
     });
     resources.load('art/zombie/spriteFrame', SpriteFrame, (err,frame) => { if (!err && this.isValid) this.zombieFrame = frame; });
+    for(const type of ['cannon','flame','fan','tesla','cryo'] as CarType[]) {
+      resources.load(`art/car-${type}-v03/spriteFrame`,SpriteFrame,(err,frame)=>{
+        if(!err&&this.isValid){this.carIcons.set(type,frame);this.state='';}
+      });
+    }
     resources.load('art/carriage-deck/spriteFrame', SpriteFrame, (err,frame) => {
       if(err||!this.isValid)return;this.carriageFrame=frame;this.state='';
-      for(const y of [40,-90])this.sprite('Armored carriage',frame,90,98,this.trainLayer).setPosition(0,y,0);
     });
     resources.load('art/fire-vortex/spriteFrame',SpriteFrame,(err,frame)=>{
       if(err||!this.isValid)return;this.fireFrame=frame;this.state='';
     });
     // Read-only diagnostic snapshot for smoke checks, without exposing state mutation.
-    (globalThis as any).__doomsday = { snapshot: () => ({ phase:this.model.phase, form:this.model.form,
+    (globalThis as any).__doomsday = { snapshot: () => ({ phase:this.model.phase,
       time:this.model.time, hp:this.model.hp, kills:this.model.kills, enemies:this.model.enemies.length,
       vortices:this.model.vortices.length, seed:this.model.initialSeed, fps:this.fps, speed:this.debugSpeed,
-      turretAngle:this.model.turretAngle, renderTurretAngle:this.model.renderTurretAngle,
-      module:this.model.module,perks:{...this.model.perks},choices:this.model.choices.slice(),choiceKind:this.model.choiceKind,
+      slots:this.model.slots.map(c=>c?{id:c.id,type:c.type,level:c.level,angle:c.angle}:null),
+      links:this.model.links.map(l=>({index:l.index,id:l.recipe.id})),pendingCar:this.model.pendingCar,
+      offers:this.model.offers.slice(),scrap:this.model.scrap,nextScrap:this.model.nextScrap,supplyCount:this.model.supplyCount,
+      knownRecipes:Array.from(this.knownRecipes),linkLevel:this.model.linkLevel,
       maxHp:this.model.maxHp,boss:this.model.boss?{hp:this.model.boss.hp,maxHp:this.model.boss.maxHp}:null,
       bossCharge:this.model.bossCharge,endReason:this.model.endReason,
-      art:{ locomotive:!!this.loco,zombie:!!this.zombieFrame,carriage:!!this.carriageFrame,fire:!!this.fireFrame },
+      art:{ locomotive:!!this.loco,zombie:!!this.zombieFrame,carriage:!!this.carriageFrame,fire:!!this.fireFrame,carIcons:Array.from(this.carIcons.keys()) },
       effects:{particles:this.particles.length,defeated:this.defeated.length,chain:this.chain}, events:this.model.events.slice() }) };
   }
   onDestroy() {
@@ -131,10 +145,11 @@ export class Game extends Component {
   }
   private begin() {
     this.unlockAudio();this.model.start(this.seed++);this.particles=[];this.chain=0;this.chainLife=0;
-    this.supportEffects=[];this.supportArt?.destroy();this.supportArt=null;
+    this.supportEffects=[];this.selectedSlot=-1;this.atlas=false;this.newRecipes.clear();
+    for(const n of this.carArt.values())n.destroy();this.carArt.clear();
     for(const d of this.defeated)d.node.destroy();this.defeated=[];
     for(const n of this.vortexSprites.values())n.destroy();this.vortexSprites.clear();
-    this.toast('清出一条路');this.tone(180,.15);
+    this.toast('击破敌人，收集改装废料');this.tone(180,.15);
   }
   private touch(event: EventTouch) {
     this.unlockAudio();
@@ -167,7 +182,7 @@ export class Game extends Component {
       ['menu','win','lose'].includes(before)?realDelta:0;
     if(before==='combat'||before==='menu')this.visualTime+=delta;
     this.frameCount++;this.frameSeconds+=dt;if(this.frameSeconds>=1){this.fps=Math.round(this.frameCount/this.frameSeconds);this.frameCount=0;this.frameSeconds=0;}
-    const frozen=['paused','reward','arrange','upgrade','supply'].includes(this.model.phase);
+    const frozen=['paused','workshop','supply'].includes(this.model.phase);
     if(!frozen){this.toastLife=Math.max(0,this.toastLife-delta);this.shake=Math.max(0,this.shake-delta*20);
       this.chainLife=Math.max(0,this.chainLife-delta);if(this.chainLife===0)this.chain=0;}
     if(!frozen)for(const p of this.particles){p.life-=delta;p.x+=p.vx*delta;p.y+=p.vy*delta;const drag=Math.pow(.96,delta*60);p.vx*=drag;p.vy*=drag;}
@@ -182,20 +197,29 @@ export class Game extends Component {
     this.defeated=this.defeated.filter(d=>d.life>0);
     if(!frozen)for(const e of this.supportEffects)e.life-=delta;
     this.supportEffects=this.supportEffects.filter(e=>e.life>0);
-    let frameKills=0;
+    let frameKills=0;const discoveries:string[]=[];
     for(const e of this.model.effects.splice(0)) {
-      if(['tesla','cryo','repair','blast','slam'].includes(e.type)){
+      if(e.type==='discovery'&&e.recipeId){
+        const recipe=RECIPES.find(r=>r.id===e.recipeId);
+        if(recipe&&!this.knownRecipes.has(recipe.id)){
+          this.knownRecipes.add(recipe.id);this.newRecipes.add(recipe.id);discoveries.push(recipe.name);this.tone(710,.35,'triangle');
+          try{globalThis.localStorage?.setItem('doomsday-recipes-v03',JSON.stringify(Array.from(this.knownRecipes)));}catch{}
+        }
+        continue;
+      }
+      const visualKind=({fan:'wind','focused-flame':'beam','burning-arc':'tesla',conduction:'tesla',
+        'burn-blast':'blast',thermal:'blast',blizzard:'cryo',shatter:'iceblast'} as Record<string,string>)[e.type]||e.type;
+      if(['tesla','cryo','wind','beam','blast','slam','iceblast','burn'].includes(visualKind)){
         const life=e.type==='tesla'?.24:e.type==='repair'?.8:.5;
-        this.supportEffects.push({type:e.type,x:e.x,y:e.y,dx:e.dx??0,dy:e.dy??0,size:e.size,life,max:life});
+        this.supportEffects.push({type:visualKind,x:e.x,y:e.y,dx:e.dx??0,dy:e.dy??0,size:e.size,life,max:life});
         if(this.supportEffects.length>32)this.supportEffects.shift();
-        if(e.type==='repair'&&e.size>0)this.toast(`维修车 · 装甲 +${Math.round(e.size)}`);
         if(e.type==='slam'){this.shake=9;this.tone(55,.25,'triangle');this.toast('首领冲击 · 护住列车');}
         if(e.type==='tesla')this.tone(320,.055,'triangle');
         continue;
       }
       if(e.type==='boss'){this.toast('破阵者出现 · 击破它才能突围');this.tone(95,.4,'triangle');continue;}
       if(e.type==='wave'){
-        this.toast(({5:'尸群聚集 · 准备接敌',21:'密集尸群 · 补给将至',45:'前方封锁 · 保持火力',50:'最后尸潮 · 全火力突围'} as Record<number,string>)[e.size]||'尸潮来袭');
+        this.toast('尸群正在聚集 · 检验你的组合');
         this.tone(210,.28,'triangle');continue;
       }
       const count=e.type==='upgrade'?40:e.type==='kill'?7:e.type==='hit'?2:9;
@@ -216,6 +240,7 @@ export class Game extends Component {
       if(e.type==='upgrade'){this.shake=8;this.tone(660,.35,'triangle');}
       if(e.type==='fire')this.tone(100,.09,'triangle');
     }
+    if(discoveries.length)this.toast(`发现联动 · ${discoveries.join(' / ')}`);
     if(frameKills){this.chain+=frameKills;this.chainLife=1.25;this.tone(130+Math.min(12,this.chain)*16,.065,'triangle');
       if(frameKills>=3)this.shake=Math.max(this.shake,Math.min(4,frameKills));}
     if(this.model.phase==='combat'){
@@ -230,7 +255,8 @@ export class Game extends Component {
     }
     this.worldNode.setPosition(!this.lowMotion?Math.sin(this.visualTime*85)*this.shake:0,0,0);
     this.drawGround();this.drawWorld();this.drawEffects();this.drawHUD();
-    if(this.state!==this.model.phase){this.state=this.model.phase;this.drawPanel();}
+    const nextState=`${this.model.phase}:${this.model.revision}:${this.selectedSlot}:${this.atlas}:${this.atlasPage}:${this.knownRecipes.size}`;
+    if(this.state!==nextState){this.state=nextState;this.drawPanel();}
   }
   private drawGround() {
     const g=this.bg;g.clear();this.rect(g,-360,-640,720,1280,C.ink);
@@ -258,80 +284,87 @@ export class Game extends Component {
     this.rect(g,-12,y-67,24,15,'#71817A',3);
   }
   private drawWorld() {
-    const g=this.world,d=this.details,a=this.attacks;g.clear();d.clear();a.clear();const m=this.model;
+    const g=this.world,d=this.details,a=this.attacks,m=this.model;g.clear();d.clear();a.clear();
     const ids=new Set(m.enemies.map(e=>e.id));
     for(const [id,n]of this.enemySprites)if(!ids.has(id)){n.destroy();this.enemySprites.delete(id);}
     for(const e of m.enemies){
-      const size=e.kind===3?87:e.kind===2?45:e.kind===1?30:35;
+      const size=e.kind===3?78:e.kind===2?45:35;
       this.circle(g,e.x+3,e.y-5,size*.42,'#142321');
       if((e.slow??0)>0){g.strokeColor=new Color('#8ADDEB');g.lineWidth=3;g.circle(e.x,e.y,size*.6);g.stroke();}
-      if(e.kind===3){
-        a.strokeColor=new Color(this.model.bossCharge>.72?C.red:C.gold);a.lineWidth=4;
-        a.circle(e.x,e.y,64);a.stroke();
-        if(this.model.bossCharge>.72){a.lineWidth=2;a.circle(e.x,e.y,68+this.model.bossCharge*25);a.stroke();}
-      }
+      if(e.freeze>0){this.polygon(a,[e.x,e.y+size*.7,e.x+size*.55,e.y,e.x,e.y-size*.7,e.x-size*.55,e.y],'#87D9EF55');}
+      if(e.kind===3){a.strokeColor=new Color(m.bossCharge>.72?C.red:C.gold);a.lineWidth=4;a.circle(e.x,e.y,60);a.stroke();}
       if(this.zombieFrame){
         let n=this.enemySprites.get(e.id);if(!n){n=this.sprite('Enemy',this.zombieFrame,size*1.5,size*1.5,this.enemyLayer);this.enemySprites.set(e.id,n);}
-        const gait=Math.sin(this.visualTime*(e.kind===1?19:12)+e.id*2.4);
-        n.setPosition(e.x,e.y+gait*1.6,0);n.angle=(Math.atan2(40-e.y,-e.x)+Math.PI/2)*180/Math.PI+gait*5;
+        const gait=e.freeze>0?0:Math.sin(this.visualTime*12+e.id*2.4);
+        n.setPosition(e.x,e.y+gait*1.6,0);n.angle=(Math.atan2(-e.y,-e.x)+Math.PI/2)*180/Math.PI+gait*5;
         n.setScale(e.flash>0?1.1:1,e.flash>0?1.1:1,1);
-        n.getComponent(Sprite)!.color=new Color(e.kind===3?'#F5906B':e.kind===2?'#D2AD78':e.kind===1?'#BAE899':'#FFFFFF');
-        if(e.flash>0){a.strokeColor=new Color(255,204,111,Math.round(e.flash/.09*170));a.lineWidth=2;a.circle(e.x,e.y,size*.6);a.stroke();}
-      }else{
-        this.circle(g,e.x,e.y, size*.39,e.flash>0?C.cream:e.kind===2?'#9A9872':'#809D69');
-        this.rect(g,e.x-size*.4,e.y-14,size*.8,14,e.kind===1?'#73624A':'#45544C',5);
-        this.circle(g,e.x-5,e.y+4,2,'#EBB35B');this.circle(g,e.x+5,e.y+4,2,'#EBB35B');
+        n.getComponent(Sprite)!.color=new Color(e.kind===3?'#F5906B':e.kind===2?'#B9C4D0':e.kind===4?'#FFAF62':e.kind===5?'#B394D9':'#FFFFFF');
+      }else this.circle(g,e.x,e.y,size*.4,e.kind===4?C.gold:C.muted);
+      if(e.kind===2||e.kind===4||e.kind===5){
+        const color=e.kind===2?'#D2DFE5':e.kind===4?'#FFA552':'#C9A1ED';
+        this.line(a,[e.x-8,e.y+24,e.x,e.y+32,e.x+8,e.y+24,e.x,e.y+17,e.x-8,e.y+24],color,3);
       }
-      if(e.hp<e.maxHp){this.rect(g,e.x-16,e.y+26,32,3,'#152325');this.rect(g,e.x-16,e.y+26,32*Math.max(0,e.hp/e.maxHp),3,C.red);}
+      if(e.hp<e.maxHp&&e.kind!==3){this.rect(g,e.x-16,e.y+27,32,3,'#152325');this.rect(g,e.x-16,e.y+27,32*Math.max(0,e.hp/e.maxHp),3,C.red);}
     }
-    this.car(g,40);this.car(g,-90);
-    if(m.module!=='none'){
-      this.car(g,-220);
-      if(!this.supportArt&&this.carriageFrame){this.supportArt=this.sprite('Support carriage',this.carriageFrame,90,98,this.trainLayer);this.supportArt.setPosition(0,-220,0);}
-      this.drawSupport(d,m.module,0,-220,1);
-    }
-    this.rect(g,-10,96,20,19,'#819489',3);this.rect(g,-10,-29,20,16,'#819489',3);
-    if(!this.loco){
-      this.rect(g,-41,190,82,89,'#5A7772',12);this.rect(g,-31,229,62,32,'#152E35',6);
-      this.line(g,[-25,234,-25,254,25,254],C.teal,3);this.rect(g,-45,168,90,17,C.gold,4);
-      for(let i=0;i<5;i++)this.line(g,[-38+i*18,168,-28+i*18,185],'#343D34',6);
-    }
-    // Sprites sit on their own railcars; moving weapon parts are drawn separately.
-    const angle=m.renderTurretAngle;
-    if(m.form==='twin'){
-      this.drawTurret(d,-22,40,angle,.69);this.drawTurret(d,22,40,angle,.69);
-    }else this.drawTurret(d,0,40,angle,m.form==='giant'?1.1:1);
-    if(m.form!=='flame'){
-      const giant=m.form==='giant',radius=giant?36:29;
-      this.drawFan(d,0,-90,radius,this.visualTime*(giant?21:16));
-      this.line(d,[-11,-43,-11,-17],C.teal,4);this.line(d,[11,-43,11,-17],C.teal,4);
-      const flow=(this.visualTime*25)%26;this.circle(d,-11,-43+flow,3,C.cream);this.circle(d,11,-43+flow,3,C.cream);
-      if(giant){
-        this.rect(d,-49,15,10,50,'#334A47',3);this.rect(d,39,15,10,50,'#334A47',3);
-        for(const y of [22,34,46,58]){this.rect(d,-47,y,6,5,C.gold,1);this.rect(d,41,y,6,5,C.gold,1);}
-      }else if(m.form==='twin'){
-        for(const x of [-46,46]){this.circle(d,x,-90,9,'#253F41');this.circle(d,x,-90,5,C.teal);}
+    if(!this.loco){this.rect(g,-41,190,82,89,'#5A7772',12);this.rect(g,-31,229,62,32,'#152E35',6);this.rect(g,-45,168,90,17,C.gold,4);}
+    const carIds=new Set(m.slots.filter(c=>!!c).map(c=>c!.id));
+    for(const [id,n]of this.carArt)if(!carIds.has(id)){n.destroy();this.carArt.delete(id);}
+    m.slots.forEach((car,i)=>{
+      const y=this.slotY[i];
+      this.car(g,y);
+      if(!car){this.circle(d,0,y,22,'#182C30');this.line(d,[-12,y,12,y],C.edge,3);this.line(d,[0,y-12,0,y+12],C.edge,3);return;}
+      if(this.carriageFrame){let n=this.carArt.get(car.id);if(!n){n=this.sprite('Carriage',this.carriageFrame,90,98,this.trainLayer);this.carArt.set(car.id,n);}n.setPosition(0,y,0);}
+      const angle=m.getRenderAngle(i);
+      this.drawCarModule(d,car.type,0,y,1,angle);
+      if(car.flash>0){
+        if(car.type==='flame')this.drawFlame(a,angle,y);
+        else if(car.type==='cannon')this.circle(a,Math.cos(angle)*52,y+Math.sin(angle)*52,7,C.cream);
       }
-    }else{
-      this.circle(d,0,-90,24,'#17292CCB');this.line(d,[-15,-90,15,-90],C.muted,3);this.line(d,[0,-105,0,-75],C.muted,3);
+      if(car.level>0)for(let j=0;j<car.level;j++)this.circle(d,-31+j*10,y-39,3,C.gold);
+    });
+    for(const link of m.links){
+      const y=(this.slotY[link.index]+this.slotY[link.index+1])/2;
+      const known=this.knownRecipes.has(link.recipe.id);
+      this.line(d,[-8,y-7,-8,y+7],known?C.teal:C.gold,4);this.line(d,[8,y-7,8,y+7],known?C.teal:C.gold,4);
+      this.circle(d,0,y,4,known?C.cream:C.gold);
     }
-    if(m.phase==='arrange'){
-      d.lineWidth=4;d.strokeColor=new Color(C.teal);d.roundRect(-61,-153,122,126,14);d.stroke();
-    }
-    if(m.form==='flame'&&m.fireFlash>0&&m.phase!=='menu'){
-      this.drawFlame(a,angle);
+    for(const p of m.projectiles){
+      const color=p.element==='fire'?'#FF9552':p.element==='ice'?'#95EDFF':p.kind==='magnetic'?'#CFADFF':p.element==='electric'?C.teal:C.gold;
+      const length=Math.max(1,Math.hypot(p.dx,p.dy));
+      this.line(a,[p.x-p.dx/length*20,p.y-p.dy/length*20,p.x,p.y],color,4);
+      this.circle(a,p.x,p.y,Math.max(4,Math.min(9,p.radius)),C.cream);
     }
     const vortexIds=new Set(m.vortices.map(v=>v.id));
     for(const [id,n]of this.vortexSprites)if(!vortexIds.has(id)){n.destroy();this.vortexSprites.delete(id);}
     for(const v of m.vortices){
-      const fade=Math.min(1,v.life/.3),spin=this.visualTime*9*(v.id%2?1:-1)+v.id;
-      if(this.fireFrame){
+      const fade=Math.min(1,v.life/.3),spin=this.visualTime*9+v.id;
+      if(v.element==='electric'){
+        a.strokeColor=new Color('#77E9E3');a.lineWidth=3;a.circle(v.x,v.y,v.radius*.75);a.stroke();
+        a.strokeColor=new Color('#BDABEF');a.lineWidth=2;a.circle(v.x,v.y,v.radius*.5);a.stroke();
+        for(let i=0;i<4;i++){
+          const q=spin+i*Math.PI/2,r=v.radius*.8;
+          this.line(a,[v.x+Math.cos(q)*r,v.y+Math.sin(q)*r,v.x+Math.cos(q+.5)*r*.4,v.y+Math.sin(q+.5)*r*.4,v.x,v.y],'#ACFFF0',3);
+        }
+      }else if(this.fireFrame){
         let n=this.vortexSprites.get(v.id);
-        if(!n){n=this.sprite('Fire vortex',this.fireFrame,v.radius*2.45,v.radius*2.45,this.vortexLayer);this.emission(n.getComponent(Sprite)!);this.vortexSprites.set(v.id,n);}
+        if(!n){n=this.sprite('Linked vortex',this.fireFrame,v.radius*2.45,v.radius*2.45,this.vortexLayer);this.emission(n.getComponent(Sprite)!);this.vortexSprites.set(v.id,n);}
         n.setPosition(v.x,v.y,0);n.angle=spin*180/Math.PI;
         const grow=(.7+.3*Math.min(1,v.age/.12))*(.85+.15*fade);n.setScale(grow,grow,1);
         n.getComponent(Sprite)!.color=new Color(255,241,210,Math.round(185*fade));
       }else this.drawVortex(a,v.x,v.y,v.radius,spin,Math.atan2(v.dy,v.dx),fade);
+    }
+  }
+  private drawCarModule(g:Graphics,type:CarType,x:number,y:number,scale:number,angle=0) {
+    if(type==='fan')this.drawFan(g,x,y,29*scale,this.visualTime*16);
+    else if(type==='tesla'||type==='cryo')this.drawSupport(g,type,x,y,scale);
+    else if(type==='flame')this.drawTurret(g,x,y,angle,scale);
+    else{
+      this.circle(g,x,y,29*scale,'#253B40');this.circle(g,x,y,23*scale,'#84958C');
+      const dx=Math.cos(angle),dy=Math.sin(angle);
+      this.line(g,[x-dx*13*scale,y-dy*13*scale,x+dx*48*scale,y+dy*48*scale],'#16292F',22*scale);
+      this.line(g,[x,y,x+dx*46*scale,y+dy*46*scale],'#ADAB84',12*scale);
+      this.circle(g,x-dx*10*scale,y-dy*10*scale,10*scale,'#4C6564');
+      this.circle(g,x+dx*47*scale,y+dy*47*scale,6*scale,C.gold);
     }
   }
   private drawTurret(g:Graphics,x:number,y:number,angle:number,scale:number) {
@@ -404,20 +437,20 @@ export class Game extends Component {
       this.rect(g,x-15*scale,y-4*scale,30*scale,8*scale,C.cream,2*scale);
     }
   }
-  private drawFlame(g:Graphics,angle:number) {
+  private drawFlame(g:Graphics,angle:number,originY=40) {
     for(let j=0;j<7;j++){
       const a=angle+(j-3)*.105,length=145+Math.sin(this.visualTime*29+j*1.8)*31+(3-Math.abs(j-3))*22;
       for(let layer=0;layer<2;layer++){
         const points:number[]=[],half=(layer?5:12),reach=length*(layer?.82:1);
         for(let i=0;i<=12;i++){const t=i/12,r=32+t*reach,w=Math.sin(t*Math.PI)*half;
           const bend=Math.sin(t*9-this.visualTime*34+j)*t*8;
-          points.push(Math.cos(a)*r-Math.sin(a)*(bend+w),40+Math.sin(a)*r+Math.cos(a)*(bend+w));}
+          points.push(Math.cos(a)*r-Math.sin(a)*(bend+w),originY+Math.sin(a)*r+Math.cos(a)*(bend+w));}
         for(let i=12;i>=0;i--){const t=i/12,r=32+t*reach,w=Math.sin(t*Math.PI)*half,bend=Math.sin(t*9-this.visualTime*34+j)*t*8;
-          points.push(Math.cos(a)*r-Math.sin(a)*(bend-w),40+Math.sin(a)*r+Math.cos(a)*(bend-w));}
+          points.push(Math.cos(a)*r-Math.sin(a)*(bend-w),originY+Math.sin(a)*r+Math.cos(a)*(bend-w));}
         this.polygon(g,points,layer?'#FFD68ED9':'#EE7325B0');
       }
     }
-    this.circle(g,Math.cos(angle)*37,40+Math.sin(angle)*37,8,'#FFF1BA');
+    this.circle(g,Math.cos(angle)*37,originY+Math.sin(angle)*37,8,'#FFF1BA');
   }
   private polygon(g:Graphics,points:number[],color:string) {
     g.fillColor=new Color(color);g.moveTo(points[0],points[1]);
@@ -462,8 +495,17 @@ export class Game extends Component {
         for(let i=0;i<=6;i++){const p=i/6,offset=i===0||i===6?0:Math.sin(i*5+this.visualTime*55)*13;
           points.push(e.x+e.dx*p-e.dy/length*offset,e.y+e.dy*p+e.dx/length*offset);}
         this.line(g,points,'#67E1D6A0',7);this.line(g,points,'#EBFFF2',2);
+      }else if(e.type==='beam'||e.type==='wind'){
+        const angle=Math.atan2(e.dy,e.dx),reach=e.size||260;
+        if(e.type==='beam'){
+          this.line(g,[e.x,e.y,e.x+Math.cos(angle)*reach,e.y+Math.sin(angle)*reach],'#F6813FA0',20*(1-t)+4);
+          this.line(g,[e.x,e.y,e.x+Math.cos(angle)*reach,e.y+Math.sin(angle)*reach],'#FFF0BC',5);
+        }else for(let i=-1;i<=1;i++){
+          const a=angle+i*.3,r=(.3+.7*t)*reach;
+          this.line(g,[e.x+Math.cos(a)*r*.55,e.y+Math.sin(a)*r*.55,e.x+Math.cos(a)*r,e.y+Math.sin(a)*r],'#A2EAD999',3);
+        }
       }else{
-        const color=e.type==='cryo'?'#83D5E8':e.type==='repair'?C.teal:e.type==='slam'?C.red:C.gold;
+        const color=e.type==='cryo'||e.type==='iceblast'?'#83D5E8':e.type==='slam'?C.red:C.gold;
         g.strokeColor=new Color(color);g.lineWidth=2+3*(1-t);
         const radius=e.type==='repair'?35:e.type==='slam'?120:e.size;
         g.circle(e.x,e.y,radius*(.25+.75*t));g.stroke();
@@ -475,21 +517,20 @@ export class Game extends Component {
     const g=this.hud,m=this.model;g.clear();
     this.rect(g,-360,432,720,208,C.ink);this.rect(g,-360,-640,720,217,C.ink);
     this.rect(g,-312,505,624,6,'#344745',3);this.rect(g,-312,505,624*m.hp/m.maxHp,6,m.hp>30?C.teal:C.red,3);
-    this.rect(g,-312,-527,624,4,'#314240',2);this.rect(g,-312,-527,624*Math.min(1,m.time/90),4,C.gold,2);
-    this.labels.hp.string=`装甲 ${Math.ceil(m.hp)}/${m.maxHp}`;this.labels.kills.string=`击破  ${m.kills}`;
-    const elapsed=Math.min(90,Math.floor(m.time+.00001));
+    this.rect(g,-312,-527,624,4,'#314240',2);
+    this.rect(g,-312,-527,624*(m.supplyCount>=6?1:Math.min(1,m.scrap/m.nextScrap)),4,C.gold,2);
+    this.labels.hp.string=`装甲 ${Math.ceil(m.hp)}/${m.maxHp}`;this.labels.kills.string=`击破 ${m.kills}`;
+    const elapsed=Math.min(80,Math.floor(m.time+.00001));
     this.labels.time.string=`${Math.floor(elapsed/60).toString().padStart(2,'0')}:${(elapsed%60).toString().padStart(2,'0')}`;
-    const t=m.time;
-    this.labels.stage.string=t>=70?'关底战 · 90秒前击败首领':t>=58?'改装完成 · 迎战破阵者':t>=40?'深入荒原 · 火力协同':t>=25?'龙卷进化 · 冲破尸潮':t>=18?'支援车就位 · 组合启动':t>=8?'火焰龙卷 · 寻找支援补给':'前方发现尸群';
-    this.labels.form.string={flame:'喷火车',tornado:'火焰龙卷',twin:'双生龙卷',giant:'巨型龙卷'}[m.form];
-    const moduleName=m.module==='none'?'尚未获得支援车':CHOICES[m.module].name;
-    this.labels.hint.string=m.phase==='arrange'?'点一下发光车位，接上风扇':m.time<8?'8秒获得风扇 · 18秒选择支援车':m.time<18?'18秒选择支援 · 电弧 / 冰霜 / 维修':`${moduleName} · ${t<25?'25秒龙卷进化':t<40?'40秒改装补给':t<58?'58秒最终改装':t<70?'70秒首领出现':'击败首领才能突围'}`;
+    this.labels.stage.string=m.time>=60?'关底战 · 80秒前击败首领':m.time>=38?'绝缘怪来袭 · 电击效果减弱':m.time>=30?'耐火怪来袭 · 火焰效果减弱':m.time>=18?'重甲怪来袭 · 炮弹需要破甲':'击破敌人 · 收集改装废料';
+    this.labels.form.string=m.slots.map(c=>c?CARS[c.type].name.replace('车',''):'空位').join(' — ');
+    this.labels.hint.string=m.supplyCount>=6?`补给已收齐 · 相邻联动 ${m.links.length} 条`:`废料 ${m.scrap} / ${m.nextScrap} · 联动 ${m.links.length} 条`;
     this.labels.footer.string=`声音 ${this.sound?'开':'关'}`;this.labels.motion.string=`镜头 ${this.lowMotion?'关':'开'}`;
     this.labels.speed.string=`倍速 ×${this.debugSpeed}`;
-    this.labels.tag.string=this.debugSpeed===1?'荒原突围  /  01':`荒原突围  /  01 · 调试 ×${this.debugSpeed}`;
+    this.labels.tag.string=this.debugSpeed===1?'四槽改装 / 车头 → 车尾':`四槽改装 / 调试 ×${this.debugSpeed}`;
     this.labels.pause.string=m.phase==='paused'?'继续 ▶':'暂停 Ⅱ';
     const boss=m.boss;
-    this.labels.boss.string=boss?`破阵者  ${Math.ceil(boss.hp)} / ${boss.maxHp}${m.bossCharge>.72?'  ·  冲击蓄力！':''}`:'';
+    this.labels.boss.string=boss?`破阵者 ${Math.ceil(boss.hp)} / ${boss.maxHp}${m.bossCharge>.72?' · 冲击蓄力！':''}`:'';
     if(boss){this.rect(g,-260,363,520,7,'#3E302C',3);this.rect(g,-260,363,520*Math.max(0,boss.hp/boss.maxHp),7,C.red,3);}
     this.labels.toast.node.setPosition(0,boss?337:375,0);
     this.labels.toast.string=this.toastLife>0?this.toastText:'';
@@ -502,74 +543,121 @@ export class Game extends Component {
   }
   private panelBase() {
     this.rect(this.overlay,-360,-535,720,1080,'#101E22EC');
-    this.rect(this.overlay,-306,-356,612,718,C.panel,24);
-    this.rect(this.overlay,-262,314,56,5,C.gold,2);
+    this.rect(this.overlay,-306,-386,612,798,C.panel,24);
+    this.rect(this.overlay,-262,370,56,5,C.gold,2);
+  }
+  private slotClick(index:number) {
+    const m=this.model;
+    if(m.pendingCar){if(m.install(index))this.selectedSlot=-1;return;}
+    if(this.selectedSlot<0){this.selectedSlot=index;return;}
+    if(this.selectedSlot!==index)m.swapSlots(this.selectedSlot,index);
+    this.selectedSlot=-1;
+  }
+  private cardIcon(type:CarType,x:number,y:number,size:number) {
+    const frame=this.carIcons.get(type);
+    if(frame){const n=this.sprite(`Card ${type}`,frame,size,size,this.overlayNode);n.setPosition(x,y,0);}
+    else this.drawCarModule(this.overlay,type,x,y,size/125,Math.PI/2);
+  }
+  private drawWorkshop() {
+    const g=this.overlay,m=this.model;
+    this.label(this.overlayNode,'列车工坊',0,322,36,C.cream,560);
+    this.label(this.overlayNode,'车头 → 车尾 · 只有相邻车厢联动',0,278,19,C.muted,560);
+    this.label(this.overlayNode,m.pendingCar?`待装：${CARS[m.pendingCar].name} · 点槽位装入或替换`:
+      this.selectedSlot>=0?`已选 ${this.selectedSlot+1} 号位 · 再点一个槽位交换`:'点两节车厢交换位置，空槽也可以交换',0,235,20,C.gold,565);
+    const xs=[-228,-76,76,228];
+    m.slots.forEach((car,i)=>{
+      const x=xs[i];this.rect(g,x-65,57,130,154,this.selectedSlot===i?'#506249':car?'#30494B':'#203639',12);
+      this.label(this.overlayNode,`${i+1}`,x,195,17,C.muted,80);
+      if(car){
+        this.cardIcon(car.type,x,145,80);
+        this.label(this.overlayNode,CARS[car.type].name,x,98,22,CARS[car.type].color,125);
+        this.label(this.overlayNode,car.level?`改装 ${car.level} 级`:'基础车厢',x,73,15,C.muted,125);
+      }else{this.line(g,[x-13,141,x+13,141],C.muted,3);this.line(g,[x,128,x,154],C.muted,3);this.label(this.overlayNode,'空槽',x,95,23,C.muted,125);}
+      this.hitAreas.push({x,y:134,w:130,h:154,action:()=>this.slotClick(i)});
+      if(i<3)this.label(this.overlayNode,'›',x+76,135,25,C.gold,24);
+    });
+    for(let i=0;i<3;i++){
+      const a=m.slots[i],b=m.slots[i+1],r=a&&b?getRecipe(a.type,b.type):null,y=13-i*71;
+      const known=r&&this.knownRecipes.has(r.id);
+      this.rect(g,-270,y-31,540,62,'#203539',8);
+      this.label(this.overlayNode,`${i+1} → ${i+2}  ${r?(known?r.name:'未知联动'):'暂无联动'}`,-253,y+12,21,r?C.teal:C.muted,505,'left');
+      this.label(this.overlayNode,r?(known?r.description:r.hint):a&&b?'同类车厢独立工作':'相邻两个槽位都需要车厢',-253,y-14,17,C.muted,505,'left');
+    }
+    if(m.pendingCar){
+      this.label(this.overlayNode,'新车需先装入，或放弃本次获得',0,-213,20,C.muted,550);
+      this.button('放弃这节车厢',0,-270,380,58,()=>{m.discardOffer();this.selectedSlot=-1;},false);
+    }else this.button(`带着 ${m.links.length} 条联动出发 →`,0,-241,530,68,()=>{this.selectedSlot=-1;m.resumeWorkshop();});
+    this.button(`联动图鉴 ${this.knownRecipes.size} / ${RECIPES.length}`,0,-331,390,48,()=>{this.atlas=true;this.atlasPage=0;},false);
+  }
+  private drawAtlas() {
+    const pages=Math.ceil(RECIPES.length/3),g=this.overlay;
+    this.label(this.overlayNode,'联动图鉴',0,305,36,C.cream,560);
+    this.label(this.overlayNode,'未知组合提供线索 · 战斗触发后揭晓',0,256,19,C.muted,560);
+    RECIPES.slice(this.atlasPage*3,this.atlasPage*3+3).forEach((r,i)=>{
+      const y=145-i*136,known=this.knownRecipes.has(r.id);
+      this.rect(g,-272,y-55,544,110,'#263F42',10);
+      this.label(this.overlayNode,`${CARS[r.a].name} ${r.directional?'→':'＋'} ${CARS[r.b].name}`,-254,y+33,18,C.muted,505,'left');
+      this.label(this.overlayNode,known?r.name:'？？？',-254,y+5,25,known?C.teal:C.gold,505,'left');
+      this.label(this.overlayNode,known?r.description:r.hint,-254,y-29,18,C.cream,505,'left');
+    });
+    this.label(this.overlayNode,`${this.atlasPage+1} / ${pages}`,0,-264,21,C.muted,100);
+    this.button('上一页',-180,-264,150,48,()=>{this.atlasPage=(this.atlasPage+pages-1)%pages;},false);
+    this.button('下一页',180,-264,150,48,()=>{this.atlasPage=(this.atlasPage+1)%pages;},false);
+    this.button('返回',0,-335,260,50,()=>{this.atlas=false;},false);
   }
   private drawPanel() {
     for(const n of this.overlayNode.children.slice())n.destroy();this.overlay.clear();this.hitAreas=[];
     const g=this.overlay,m=this.model,phase=m.phase;
-    if(phase==='combat')return;
-    if(phase==='arrange'){
-      this.rect(g,-290,-390,580,137,C.panel,16);
-      this.label(this.overlayNode,'接到喷火车后面',0,-296,27,C.cream,540);
-      this.label(this.overlayNode,'点击发光空位  ↑',0,-345,20,C.teal,540);
-      this.hitAreas.push({x:0,y:-90,w:140,h:140,action:()=>{m.installFan();this.toast('组合启动 · 火焰龙卷');}});return;
+    if(phase==='combat'){
+      this.button('改装 ↔',224,-484,170,52,()=>{this.selectedSlot=-1;this.atlas=false;m.openWorkshop();},false);
+      return;
     }
     this.panelBase();
+    if(this.atlas&&(phase==='menu'||phase==='workshop')){this.drawAtlas();return;}
+    if(phase==='workshop'){this.drawWorkshop();return;}
     if(phase==='menu'){
-      this.label(this.overlayNode,'WASTELAND EXPRESS',0,259,15,C.teal,560);
-      this.label(this.overlayNode,'末日列车',0,188,62,C.cream,560);
-      this.label(this.overlayNode,'把火力接上，把尸潮推平。',0,119,23,C.muted,540);
-      this.drawVortex(g,0,-7,68,1.3);
-      this.label(this.overlayNode,'选择支援车，组合你的突围火力',0,-123,23,C.cream,550);
-      this.label(this.overlayNode,'随机强化  ·  三种支援  ·  关底首领',0,-166,17,C.muted,550);
-      this.button('发车  →',0,-259,474,76,()=>this.begin());
-    }else if(phase==='reward'){
-      this.label(this.overlayNode,'发现改装补给',0,250,34,C.cream,550);
-      this.label(this.overlayNode,'风扇车',0,164,30,C.teal,500);
-      this.fanPreview();
-      this.label(this.overlayNode,'喷火 ＋ 风扇 → 火焰龙卷',0,-62,27,C.cream,558);
-      this.label(this.overlayNode,'旋转火柱穿过怪群，持续灼烧沿途敌人',0,-114,18,C.muted,550);
-      this.button('装配风扇车',0,-251,474,76,()=>m.beginArrange());
+      this.label(this.overlayNode,'WASTELAND EXPRESS',0,293,15,C.teal,560);
+      this.label(this.overlayNode,'末日列车',0,225,61,C.cream,560);
+      this.label(this.overlayNode,'四节车厢，拼出你的突围火力。',0,156,23,C.muted,555);
+      for(const [i,t] of (['cannon','flame','fan'] as CarType[]).entries()){
+        const x=(i-1)*136;this.rect(g,x-47,-26,94,109,'#2D4545',10);this.cardIcon(t,x,28,100);
+        if(i<2)this.label(this.overlayNode,'?',x+68,25,23,C.gold,26);
+      }
+      this.label(this.overlayNode,'独立开火 · 相邻联动 · 顺序改变效果',0,-88,22,C.cream,560);
+      this.label(this.overlayNode,'击破收集废料，获得新车厢和改装词条',0,-131,18,C.muted,560);
+      this.button('发车  →',0,-231,474,74,()=>this.begin());
+      this.button(`联动图鉴 ${this.knownRecipes.size}/${RECIPES.length}`,0,-324,370,48,()=>{this.atlas=true;this.atlasPage=0;},false);
     }else if(phase==='supply'){
-      const isModule=m.choiceKind==='module';
-      this.label(this.overlayNode,isModule?'接上哪节支援车？':'改装补给 · 三选一',0,260,32,C.cream,550);
-      this.label(this.overlayNode,isModule?'本局选择一节，自动协同攻击':'立即生效，本局持续 · 每项最多两级',0,209,18,C.muted,550);
-      m.choices.forEach((id:ChoiceId,i:number)=>{
-        const y=112-i*151,card=CHOICES[id],level=m.perks[id]??0;
-        this.rect(g,-269,y-64,538,128,isModule?'#294447':'#343E35',13);
-        if(isModule)this.drawSupport(g,id,-219,y,1);
-        else{this.circle(g,-219,y,31,'#1B3033');this.label(this.overlayNode,String(level+1),-219,y,31,C.gold,60);}
-        this.label(this.overlayNode,card.name+(isModule?'':`  Lv.${level+1}`),-168,y+29,25,isModule?C.teal:C.gold,412,'left');
-        this.label(this.overlayNode,card.description,-168,y-17,20,C.cream,410,'left');
-        this.hitAreas.push({x:0,y,w:538,h:128,action:()=>{m.chooseSupply(id);this.toast(`${card.name} · 改装完成`);}});
+      this.label(this.overlayNode,'废料补给 · 三选一',0,303,34,C.cream,555);
+      this.label(this.overlayNode,'新车可以装入空位，也可以替换旧车',0,250,19,C.muted,555);
+      m.offers.forEach((offer,i)=>{
+        const y=144-i*154,isCar=offer.kind==='car';
+        const data=isCar?CARS[offer.id as CarType]:MODS[offer.id as ModId];
+        this.rect(g,-270,y-67,540,134,isCar?'#294447':'#414635',13);
+        if(isCar)this.cardIcon(offer.id as CarType,-217,y,97);
+        else{this.circle(g,-217,y,29,'#263B3D');this.label(this.overlayNode,'改',-217,y,26,C.gold,60);}
+        this.label(this.overlayNode,data.name,-164,y+35,25,isCar?C.teal:C.gold,411,'left');
+        this.label(this.overlayNode,data.description,-164,y-6,20,C.cream,410,'left');
+        this.label(this.overlayNode,isCar?'车厢 · 选择后安排槽位':'词条 · 改变现有车厢或联动',-164,y-45,15,C.muted,410,'left');
+        this.hitAreas.push({x:0,y,w:540,h:134,action:()=>{this.selectedSlot=-1;this.atlas=false;m.chooseOffer(i);}});
       });
-    }else if(phase==='upgrade'){
-      this.label(this.overlayNode,'火力，再进化。',0,251,35,C.cream,550);
-      this.label(this.overlayNode,'选择本局的龙卷形态',0,196,19,C.muted,550);
-      this.rect(g,-268,-100,258,236,'#284041',16);this.rect(g,10,-100,258,236,'#3B382C',16);
-      this.drawVortex(g,-161,73,27,1);this.drawVortex(g,-111,73,27,2);this.drawVortex(g,137,69,47,1);
-      this.label(this.overlayNode,'双生龙卷',-138,-8,25,C.teal,235);this.label(this.overlayNode,'巨型龙卷',138,-8,25,C.gold,235);
-      this.label(this.overlayNode,'每次两道\n更快出击',-138,-61,18,C.muted,235);this.label(this.overlayNode,'范围更大\n持续更久',138,-61,18,C.muted,235);
-      this.button('选择双生',-138,-170,258,64,()=>{m.choose('twin');this.toast('双生龙卷 · 双倍席卷');},false);
-      this.button('选择巨型',138,-170,258,64,()=>{m.choose('giant');this.toast('巨型龙卷 · 横扫尸潮');});
-      this.label(this.overlayNode,'下一局可以试试另一种',0,-277,18,C.muted,530);
+      this.label(this.overlayNode,`已收集废料 ${m.scrap} · 第 ${m.supplyCount} 次补给`,0,-286,19,C.muted,550);
     }else if(phase==='paused'){
-      this.label(this.overlayNode,'列车已暂停',0,201,37,C.cream,550);
-      this.label(this.overlayNode,'准备好了，再一起冲出去。',0,117,21,C.muted,550);
-      this.button('继续前进',0,-40,470,76,()=>m.resume());
-      this.button('重新发车',0,-147,470,66,()=>this.begin(),false);
+      this.label(this.overlayNode,'列车已暂停',0,218,37,C.cream,550);
+      this.label(this.overlayNode,'准备好了，再一起冲出去。',0,141,21,C.muted,550);
+      this.button('继续前进',0,-25,470,76,()=>m.resume());
+      this.button('重新发车',0,-136,470,66,()=>this.begin(),false);
     }else{
-      this.label(this.overlayNode,phase==='win'?'首领已击破':m.endReason==='timeout'?'突围超时':'列车失守',0,224,45,phase==='win'?C.gold:C.red,550);
-      this.label(this.overlayNode,phase==='win'?'这套火力，冲破了封锁。':m.endReason==='timeout'?'90秒内未击败首领，下局加强火力。':'换一种支援和强化，再闯一次。',0,153,21,C.muted,550);
-      this.label(this.overlayNode,`${m.kills}`,0,43,75,C.cream,550);
-      this.label(this.overlayNode,`击破敌人  /  坚持 ${Math.round(m.time)} 秒`,0,-23,19,C.muted,550);
-      this.label(this.overlayNode,`${{flame:'基础喷火',tornado:'火焰龙卷',twin:'双生龙卷',giant:'巨型龙卷'}[m.form]} · ${m.module==='none'?'无支援':CHOICES[m.module].name}`,0,-79,22,C.teal,550);
-      const build=Object.entries(m.perks).filter(([,n])=>Number(n)>0).map(([id,n])=>`${CHOICES[id as ChoiceId].name} ${n}级`).join(' / ');
-      this.label(this.overlayNode,build||'尚未获得强化',0,-123,17,C.muted,552);
-      this.button('再来一局  →',0,-207,474,76,()=>this.begin());
-      this.button('返回车库',0,-294,474,52,()=>{m.phase='menu';},false);
-      try{globalThis.localStorage?.setItem('doomsday-last-run',JSON.stringify({version:'0.2.0',seed:m.initialSeed,form:m.form,module:m.module,perks:m.perks,hp:m.hp,kills:m.kills,time:m.time,result:phase,reason:m.endReason,events:m.events}));}catch{}
+      this.label(this.overlayNode,phase==='win'?'首领已击破':m.endReason==='timeout'?'突围超时':'列车失守',0,287,44,phase==='win'?C.gold:C.red,550);
+      this.label(this.overlayNode,phase==='win'?'这条车厢链，冲破了封锁。':m.endReason==='timeout'?'首领仍在，换种联动再试一次。':'调整车厢顺序，试试另一种组合。',0,224,21,C.muted,550);
+      this.label(this.overlayNode,`${m.kills}`,0,127,68,C.cream,550);
+      this.label(this.overlayNode,`击破敌人 / 坚持 ${Math.round(m.time)} 秒`,0,70,19,C.muted,550);
+      this.label(this.overlayNode,m.slots.map(c=>c?CARS[c.type].name:'空位').join(' → '),0,9,21,C.teal,555);
+      this.label(this.overlayNode,m.links.map(l=>this.knownRecipes.has(l.recipe.id)?l.recipe.name:'未知联动').join(' / ')||'本局没有相邻联动',0,-54,18,C.muted,550);
+      this.label(this.overlayNode,`本局新发现 ${this.newRecipes.size} 种联动`,0,-115,20,C.gold,550);
+      this.button('再组一列  →',0,-218,474,74,()=>this.begin());
+      this.button('返回车库',0,-309,474,52,()=>{m.phase='menu';this.atlas=false;},false);
+      try{globalThis.localStorage?.setItem('doomsday-last-run',JSON.stringify({version:'0.3.0',seed:m.initialSeed,slots:m.slots.map(c=>c?{type:c.type,level:c.level}:null),links:m.links.map(l=>l.recipe.id),hp:m.hp,kills:m.kills,time:m.time,result:phase,reason:m.endReason,events:m.events}));}catch{}
     }
   }
 }

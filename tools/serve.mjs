@@ -5,7 +5,9 @@ import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 
 const root = resolve(fileURLToPath(new URL('../build/web-mobile/', import.meta.url)));
-const port = Number(process.env.PORT || process.argv.slice(2).find(arg => /^\d+$/.test(arg)) || 0);
+// Stable origin keeps local settings and discovered recipes across launcher sessions.
+// Pass 0 explicitly for an isolated development preview.
+const port = Number(process.env.PORT || process.argv.slice(2).find(arg => /^\d+$/.test(arg)) || 61401);
 const types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json', '.css': 'text/css', '.png': 'image/png', '.jpg': 'image/jpeg', '.webp': 'image/webp', '.svg': 'image/svg+xml', '.wasm': 'application/wasm', '.mp3': 'audio/mpeg', '.ogg': 'audio/ogg' };
 const server = http.createServer((request, response) => {
     try {
@@ -22,6 +24,12 @@ const server = http.createServer((request, response) => {
     } catch {
         response.writeHead(404).end('Not found');
     }
+});
+server.on('error', error => {
+    console.error(error.code === 'EADDRINUSE'
+        ? `Port ${port} is already in use. Close the previous preview window, or run: node tools/serve.mjs 0`
+        : error.message);
+    process.exitCode = 1;
 });
 server.listen(port, '127.0.0.1', () => {
     const url = `http://127.0.0.1:${server.address().port}`;
