@@ -4,9 +4,9 @@
   "creator": {
     "version": "3.8.8"
   },
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
-  "description": "Four-slot train builder with independent carriages and adjacent combination discoveries",
+  "description": "Five-slot train builder with adjacent role-based support and hand-painted twilight artwork",
   "scripts": {
     "build:web": "powershell -ExecutionPolicy Bypass -File tools/build-web.ps1",
     "serve": "node tools/serve.mjs",

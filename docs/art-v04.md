@@ -1,0 +1,117 @@
+# Modular runtime art v04 — candidates, not selected
+
+Status: **candidate asset preservation only**. The user changed the active objective to reviewing several complete art directions before choosing. Generation already in progress was allowed to finish and preserved here; no further generation, game integration, or art selection is implied by this document.
+
+## Production method
+
+Built-in `image_gen` mode, eleven separate generation calls: one empty hull, five independently rotatable weapon modules, and five runtime effects. No CLI/API fallback. No algorithmic matting, crop, resize, or image editing. Generated originals retained; workspace copies preserve their original PNG bytes. Written palette guidance only; no reference image attachments. All eleven images were visually inspected when returned by the tool.
+
+The v04 direction deliberately removes v03 grunge, rivets and hazard-strip ornament. Modules use broad charcoal/teal forms, cream highlights and one identifying weapon accent. These are separate runtime layers, not complete carriage illustrations. Intended scale is roughly 50px for modules and 50–200px for effects, with final readability subject to the user's selected art direction and consuming UI.
+
+## Dimensions, alpha, and importer verification
+
+All module sprites and square effects are 1254 × 1254. The built-in tool returned `fx-wind-v04.png` at 1536 × 1024 and `fx-flame-jet-v04.png` at 1672 × 941, despite the requested square canvas. Preserve their actual aspect ratios if used.
+
+All eleven outputs are 32-bit ARGB PNG with genuine alpha-zero background pixels. Four-pixel-stride alpha sampling found min 0 in every asset, max 255 in the modules/projectile, max 254 in frost, and max 253 in wind/flame-jet/link-charge. Many apparently solid surface pixels have alpha 252–253; original alpha is preserved. Frost and link-charge exact center alpha is 0. Wind has a substantial luminous body with center alpha 252, so it is much denser than the requested light airflow.
+
+Every PNG has a sibling Cocos sprite-frame `.meta` using a fresh UUID, matching texture/sprite-frame references, exact raw dimensions and vertices, `hasAlpha: true`, `trimType: none`, and nominal `pivotX/pivotY: 0.5`. Metadata preserves the canvas; it does not guarantee that the generated subject's mechanical pivot is pixel-exact.
+
+## Visual and integration observations
+
+- Hull: empty center, four wheels, couplers top/bottom, front toward top. Clean broad shape.
+- Cannon: points right (+X); round base near canvas center. Mild form depth remains.
+- Flame module: points right (+X), no baked fire; base center is approximately (0.435W, 0.495H), so its visual pivot is left of nominal canvas center. A future consuming Sprite child can be shifted +0.065 of its displayed width under a centered rotation parent; do not claim exact pivot alignment without runtime verification.
+- Fan: four broad blades and hub only, no fixed cage. Hub approximately canvas center.
+- Tesla: broad concentric coil, two violet capacitors, cyan center, no baked arcs. Approximately centered.
+- Cryo: a single broad-faceted crystal and simple mount, no snow. Approximately centered.
+- Projectile: points right with a left tail, but nose is around (0.59W, 0.49H), not the requested exact canvas center. Its visible body occupies a relatively small region of the untrimmed canvas.
+- Wind: three horizontal mint ribbons with curls toward the right. Bloom is broader/denser than requested. Candidate only.
+- Frost: centered ring, eight prominent crystals and transparent center. Additional small chips and a broad halo make it busier than the modules; halo nears canvas edges. Candidate only.
+- Flame jet: narrow origin at left, approximately (0.125W, 0.50H), long horizontal flame body toward right, with mint airflow. Rectangular source aspect ratio.
+- Link charge: four broad alternate mint/gold arcs, four large dots, transparent center. Broad colored light edge.
+
+These observations are source-image inspection, not an assertion of acceptance in the game. No further regeneration was started after the request to pause and review styles.
+
+## Saved outputs and source images
+
+| Asset | Workspace output | Built-in generated source |
+| --- | --- | --- |
+| hull-v04 | `assets/resources/art/hull-v04.png` | `C:\Users\26442\.codex\generated_images\01a07510-9c1c-7682-8b16-7a7cbfee4a73\exec-2ce60835-5a35-45a7-90cc-a3951eb3ea30.png` |
+| weapon-cannon-v04 | `assets/resources/art/weapon-cannon-v04.png` | `C:\Users\26442\.codex\generated_images\01a07510-9c1c-7682-8b16-7a7cbfee4a73\exec-aec647eb-05fd-4ad6-ba4f-ce4e551bae2b.png` |
+| weapon-flame-v04 | `assets/resources/art/weapon-flame-v04.png` | `C:\Users\26442\.codex\generated_images\01a07510-9c1c-7682-8b16-7a7cbfee4a73\exec-64e640b8-31be-4585-9fcc-d8df2c5f012b.png` |
+| weapon-fan-v04 | `assets/resources/art/weapon-fan-v04.png` | `C:\Users\26442\.codex\generated_images\01a07510-9c1c-7682-8b16-7a7cbfee4a73\exec-54ba297b-0b8f-4c81-a710-e5887ed140be.png` |
+| weapon-tesla-v04 | `assets/resources/art/weapon-tesla-v04.png` | `C:\Users\26442\.codex\generated_images\01a07510-9c1c-7682-8b16-7a7cbfee4a73\exec-54681829-e3f4-414d-a55c-d909991aee03.png` |
+| weapon-cryo-v04 | `assets/resources/art/weapon-cryo-v04.png` | `C:\Users\26442\.codex\generated_images\01a07510-9c1c-7682-8b16-7a7cbfee4a73\exec-84b4d685-4141-48c5-9b18-c8f8ad8c9734.png` |
+| fx-projectile-v04 | `assets/resources/art/fx-projectile-v04.png` | `C:\Users\26442\.codex\generated_images\01a07510-9c1c-7682-8b16-7a7cbfee4a73\exec-7ec679cb-8981-4bd9-be87-2cf16b01f2f5.png` |
+| fx-wind-v04 | `assets/resources/art/fx-wind-v04.png` | `C:\Users\26442\.codex\generated_images\01a07510-9c1c-7682-8b16-7a7cbfee4a73\exec-94ec983c-758c-45d9-a127-3ae5fd7ba7e6.png` |
+| fx-frost-v04 | `assets/resources/art/fx-frost-v04.png` | `C:\Users\26442\.codex\generated_images\01a07510-9c1c-7682-8b16-7a7cbfee4a73\exec-4d4f3d8e-a887-48af-b42e-998ca2f6d191.png` |
+| fx-flame-jet-v04 | `assets/resources/art/fx-flame-jet-v04.png` | `C:\Users\26442\.codex\generated_images\01a07510-9c1c-7682-8b16-7a7cbfee4a73\exec-f973d31f-3906-4c5c-afbe-b5de7347685d.png` |
+| fx-link-charge-v04 | `assets/resources/art/fx-link-charge-v04.png` | `C:\Users\26442\.codex\generated_images\01a07510-9c1c-7682-8b16-7a7cbfee4a73\exec-de761fcb-4624-4114-961a-51d27886604c.png` |
+
+## Full generation prompts
+
+### hull-v04
+
+```text
+Use case: stylized-concept. Asset type: production modular sprite for a topdown train-defense video game, intended to be displayed at only 50 pixels. Make ONE separate reusable game prop, NOT a scene, card, poster, or full illustration. Square 1024x1024 canvas. Strict orthographic DIRECTLY OVERHEAD camera, flat top view, no isometric angle or visible front face. Clean simplified chunky 2.5D mobile-game rendering: only a few large solid shapes, smooth flat dark charcoal and desaturated teal metal planes with a few broad warm-cream edge highlights. Very low visual complexity and bold silhouette. Matte clean surface, restrained soft form shading. NO grunge, weathering, scratches, grain, rivets, bolts, hazard stripes, piping clutter, small ornaments, thin lines or photoreal textures. No text, logos, arrows, labels, border, UI. GENUINELY TRANSPARENT RGBA BACKGROUND, zero alpha outside the object; no ground, cast shadow, black rectangle, checkerboard pattern, glow halo, background or setting. Entire sprite is safely inside canvas with generous transparent margins. Subject: only an EMPTY armored train carriage hull with a square deck, four broad simple wheels (two on left and two on right) and short simple couplers at top and bottom. The square deck is an uninterrupted empty desaturated teal flat panel with simple charcoal thick beveled perimeter rim; central mounting space must be empty and uncluttered. No weapon, turret, hole, hatch, cog, fan or center emblem. Front of train toward TOP. Deck centered at canvas center. Whole hull including couplers fits between 15% and 85% of canvas. Simple shape design about 12 broad parts total. Intended as bottom layer under interchangeable weapon modules.
+```
+
+### weapon-cannon-v04
+
+```text
+Use case: stylized-concept. Asset type: production modular sprite for a topdown train-defense video game, intended to be displayed at only 50 pixels. Make ONE separate reusable game prop, NOT a scene, card, poster, or full illustration. Square 1024x1024 canvas. Strict orthographic DIRECTLY OVERHEAD camera, flat top view, no isometric angle or visible front face. Clean simplified chunky 2.5D mobile-game rendering: only a few large solid shapes, smooth flat dark charcoal and desaturated teal metal planes with a few broad warm-cream edge highlights. Very low visual complexity and bold silhouette. Matte clean surface, restrained soft form shading. NO grunge, weathering, scratches, grain, rivets, bolts, hazard stripes, piping clutter, small ornaments, thin lines or photoreal textures. No text, logos, arrows, labels, border, UI. GENUINELY TRANSPARENT RGBA BACKGROUND, zero alpha outside the object; no ground, cast shadow, black rectangle, checkerboard pattern, glow halo, background or setting. Entire sprite is safely inside canvas with generous transparent margins. Subject: ONLY a simple cannon TURRET MODULE, no train hull, wheels, deck or vehicle. Circular smooth charcoal swivel base centered EXACTLY at canvas coordinates (512,512), rotation pivot exactly at (512,512). Base radius about 160 pixels. On top, one single chunky steel gun barrel with one broad muted-gold collar projects from the exact center horizontally toward the RIGHT (+X / 3 o'clock). Barrel muzzle at about x=830,y=512; rear breech at x=410,y=512. Do NOT center the entire silhouette bounding box: the ROUND BASE CENTER must be the EXACT CANVAS CENTER and the barrel extends to the right. No visible muzzle front face; flat overhead gun profile. Palette warm steel, dark charcoal and one muted-gold collar. Only about 5 broad parts.
+```
+
+### weapon-flame-v04
+
+```text
+Use case: stylized-concept. Asset type: production modular sprite for a topdown train-defense video game, intended to be displayed at only 50 pixels. Make ONE separate reusable game prop, NOT a scene, card, poster, or full illustration. Square 1024x1024 canvas. Strict orthographic DIRECTLY OVERHEAD camera, flat top view, no isometric angle or visible front face. Clean simplified chunky 2.5D mobile-game rendering: only a few large solid shapes, smooth flat dark charcoal and desaturated teal metal planes with a few broad warm-cream edge highlights. Very low visual complexity and bold silhouette. Matte clean surface, restrained soft form shading. NO grunge, weathering, scratches, grain, rivets, bolts, hazard stripes, piping clutter, small ornaments, thin lines or photoreal textures. No text, logos, arrows, labels, border, UI. GENUINELY TRANSPARENT RGBA BACKGROUND, zero alpha outside the object; no ground, cast shadow, black rectangle, checkerboard pattern, glow halo, background or setting. Entire sprite is safely inside canvas with generous transparent margins. Subject: ONLY a simple flamethrower TURRET MODULE, no train hull, wheels, deck or vehicle. Smooth circular charcoal swivel base center EXACTLY at canvas coordinates (512,512), rotation pivot exactly at (512,512), base radius about 170 pixels. One short thick dark nozzle with a broad orange collar extends horizontally to the RIGHT (+X / 3 o'clock) from center, muzzle near x=810,y=512. Two simple rounded orange fuel cells positioned symmetrically above and below the base center at about (450,390) and (450,634). NO FLAMES, fire, smoke, fuel pipes, valves or microdetail. Do NOT center the whole silhouette bounding box: circular base CENTER is exactly canvas center with nozzle extending RIGHT. About 6 broad parts total.
+```
+
+### weapon-fan-v04
+
+```text
+Use case: stylized-concept. Asset type: production modular sprite for a topdown train-defense video game, intended to be displayed at only 50 pixels. Make ONE separate reusable game prop, NOT a scene, card, poster, or full illustration. Square 1024x1024 canvas. Strict orthographic DIRECTLY OVERHEAD camera, flat top view, no isometric angle or visible front face. Clean simplified chunky 2.5D mobile-game rendering: only a few large solid shapes, smooth flat dark charcoal and desaturated teal metal planes with a few broad warm-cream edge highlights. Very low visual complexity and bold silhouette. Matte clean surface, restrained soft form shading. NO grunge, weathering, scratches, grain, rivets, bolts, hazard stripes, piping clutter, small ornaments, thin lines or photoreal textures. No text, logos, arrows, labels, border, UI. GENUINELY TRANSPARENT RGBA BACKGROUND, zero alpha outside the object; no ground, cast shadow, black rectangle, checkerboard pattern, glow halo, background or setting. Entire sprite is safely inside canvas with generous transparent margins. Subject: ONLY one isolated industrial FAN ROTOR, no train hull, wheels, deck, base plate, fixed outer cage, fixed ring, housing or background. EXACTLY FOUR broad mint-green blades arranged in perfect rotational symmetry around a simple cream and charcoal circular hub EXACTLY AT canvas coordinates (512,512). The four blades are broad and short, with smooth rounded corners and simple flat mint color; one broad cream highlight edge each. Entire rotor diameter about 680 pixels. This image itself will rotate around canvas center, so everything shown must belong to the rotor. Absolutely no fixed housing or background circles.
+```
+
+### weapon-tesla-v04
+
+```text
+Use case: stylized-concept. Asset type: production modular sprite for a topdown train-defense video game, intended to be displayed at only 50 pixels. Make ONE separate reusable game prop, NOT a scene, card, poster, or full illustration. Square 1024x1024 canvas. Strict orthographic DIRECTLY OVERHEAD camera, flat top view, no isometric angle or visible front face. Clean simplified chunky 2.5D mobile-game rendering: only a few large solid shapes, smooth flat dark charcoal and desaturated teal metal planes with a few broad warm-cream edge highlights. Very low visual complexity and bold silhouette. Matte clean surface, restrained soft form shading. NO grunge, weathering, scratches, grain, rivets, bolts, hazard stripes, piping clutter, small ornaments, thin lines or photoreal textures. No text, logos, arrows, labels, border, UI. GENUINELY TRANSPARENT RGBA BACKGROUND, zero alpha outside the object; no ground, cast shadow, black rectangle, checkerboard pattern, glow halo, background or setting. Entire sprite is safely inside canvas with generous transparent margins. Subject: ONLY a simple electric TESLA TURRET MODULE, no train hull, wheels, deck or vehicle. Circular charcoal housing centered EXACTLY at canvas coordinates (512,512), its concentric round coil made of only TWO broad clean desaturated teal and muted violet rings with ONE solid bright cyan round center. Two large simple violet capacitor blocks symmetrically at left and right. Exact visual rotational center is canvas center. Entire module fits a circle 680 pixels in diameter. No lightning, arcs, electrical threads, tubes, cables, sparks, glyphs, small ornament or glowing aura. About 6 broad shapes, bold purple and cyan distinction.
+```
+
+### weapon-cryo-v04
+
+```text
+Use case: stylized-concept. Asset type: production modular sprite for a topdown train-defense video game, intended to be displayed at only 50 pixels. Make ONE separate reusable game prop, NOT a scene, card, poster, or full illustration. Square 1024x1024 canvas. Strict orthographic DIRECTLY OVERHEAD camera, flat top view, no isometric angle or visible front face. Clean simplified chunky 2.5D mobile-game rendering: only a few large solid shapes, smooth flat dark charcoal and desaturated teal metal planes with a few broad warm-cream edge highlights. Very low visual complexity and bold silhouette. Matte clean surface, restrained soft form shading. NO grunge, weathering, scratches, grain, rivets, bolts, hazard stripes, piping clutter, small ornaments, thin lines or photoreal textures. No text, logos, arrows, labels, border, UI. GENUINELY TRANSPARENT RGBA BACKGROUND, zero alpha outside the object; no ground, cast shadow, black rectangle, checkerboard pattern, glow halo, background or setting. Entire sprite is safely inside canvas with generous transparent margins. Subject: ONLY a simple freezing TURRET MODULE, no train hull, wheels, deck or vehicle. One LARGE symmetrical faceted ICE-BLUE CRYSTAL with only 5 to 7 broad flat facets held by a simple charcoal circular mount with three thick short prongs. Circular mount center and crystal center are EXACTLY at canvas coordinates (512,512), providing centered rotation pivot. Round mount diameter about 460 pixels, whole crystal and mount fit within circle 660 pixels diameter. Crystal pale iceblue with broad cream-white facet highlights, dark charcoal/teal mount. NO snowfall, ice particles, mist, pipes, tanks, aura, small facets or ornament. Directly overhead, simple and clearly legible at 50 pixels.
+```
+
+### fx-projectile-v04
+
+```text
+Use case: stylized-concept. Asset type: isolated transparent RUNTIME VFX SPRITE for a topdown train-defense mobile game, used at 50-200 pixels. ONE individual effect on 1024x1024 square canvas, clean stylized chunky readable design with a handful of broad shapes. Topdown orthographic view. Genuine RGBA TRANSPARENCY with alpha zero outside the effect and translucent alpha on soft fading edges. No black background, opaque white background, checkerboard painted pattern, ground, floor, environment, scene, objects, characters, weapon, train, poster, frame, card, text, symbols, numbers or watermark. No noisy particle cloud, tiny intricate ornament or excessive bloom. All artwork fully inside canvas with transparent margin. One single short thick projectile pointing RIGHT (+X) on the horizontal midline. A solid warm-gold and cream-white bullet nose is at the EXACT CANVAS CENTER (512,512); thick body extends a short distance LEFT from the nose, followed by a short soft translucent warm-gold tail to the left. Everything fits x=220..560 and y=420..604. The solid bullet must remain readable, NOT a giant glowing patch. Bullet front is at center, tail is on left. No explosion, rings or extra projectiles.
+```
+
+### fx-wind-v04
+
+```text
+Use case: stylized-concept. Asset type: isolated transparent RUNTIME VFX SPRITE for a topdown train-defense mobile game, used at 50-200 pixels. ONE individual effect on 1024x1024 square canvas, clean stylized chunky readable design with a handful of broad shapes. Topdown orthographic view. Genuine RGBA TRANSPARENCY with alpha zero outside the effect and translucent alpha on soft fading edges. No black background, opaque white background, checkerboard painted pattern, ground, floor, environment, scene, objects, characters, weapon, train, poster, frame, card, text, symbols, numbers or watermark. No noisy particle cloud, tiny intricate ornament or excessive bloom. All artwork fully inside canvas with transparent margin. Three broad mint-green airflow ribbons blowing from LEFT TO RIGHT along the horizontal midline, with simple gentle arc curls and a little softly translucent swirling motion. Horizontal composition x=130..894, y=340..684. Large clean tapered ribbons, airy translucency; no white slab or opaque background. The three flowing strokes are the entire effect, no circle frame, no fan, no more than three main ribbons.
+```
+
+### fx-frost-v04
+
+```text
+Use case: stylized-concept. Asset type: isolated transparent RUNTIME VFX SPRITE for a topdown train-defense mobile game, used at 50-200 pixels. ONE individual effect on 1024x1024 square canvas, clean stylized chunky readable design with a handful of broad shapes. Topdown orthographic view. Genuine RGBA TRANSPARENCY with alpha zero outside the effect and translucent alpha on soft fading edges. No black background, opaque white background, checkerboard painted pattern, ground, floor, environment, scene, objects, characters, weapon, train, poster, frame, card, text, symbols, numbers or watermark. No noisy particle cloud, tiny intricate ornament or excessive bloom. All artwork fully inside canvas with transparent margin. A circular ICE FROST SHOCKWAVE RING centered EXACTLY at canvas center (512,512), viewed directly from above. A clean thin-to-broad pale iceblue circular energy rim with SIX TO EIGHT chunky large ice crystal shards spaced around circumference; soft subtle pale blue outer fading halo. Diameter around 700 pixels. The LARGE CENTER OF THE RING IS EMPTY AND FULLY TRANSPARENT; background outside also genuinely transparent. Broad simple icy blue/white facets, no snowflake symbol, no tiny glitter, no field of snow particles, no enemies.
+```
+
+### fx-flame-jet-v04
+
+```text
+Use case: stylized-concept. Asset type: isolated transparent RUNTIME VFX SPRITE for a topdown train-defense mobile game, used at 50-200 pixels. ONE individual effect on 1024x1024 square canvas, clean stylized chunky readable design with a handful of broad shapes. Topdown orthographic view. Genuine RGBA TRANSPARENCY with alpha zero outside the effect and translucent alpha on soft fading edges. No black background, opaque white background, checkerboard painted pattern, ground, floor, environment, scene, objects, characters, weapon, train, poster, frame, card, text, symbols, numbers or watermark. No noisy particle cloud, tiny intricate ornament or excessive bloom. All artwork fully inside canvas with transparent margin. A narrow elongated orange and cream-white high-temperature FIRE JET traveling horizontally from LEFT TO RIGHT. Narrow origin at left around (150,512), hottest cream-white core streaming right, tapered flame tongues ending near (890,512). Overall jet envelope only about 210 pixels tall, much longer than wide. A small amount of broad mint-green airflow wrapping the orange flame adds train weapon synergy. Clean broad cohesive flame shapes, not many individual particles. Genuinely transparent outside flames with lightly translucent outer edge; no smoke clouds, no cannon, no broad circular explosion.
+```
+
+### fx-link-charge-v04
+
+```text
+Use case: stylized-concept. Asset type: isolated transparent RUNTIME VFX SPRITE for a topdown train-defense mobile game, used at 50-200 pixels. ONE individual effect on 1024x1024 square canvas, clean stylized chunky readable design with a handful of broad shapes. Topdown orthographic view. Genuine RGBA TRANSPARENCY with alpha zero outside the effect and translucent alpha on soft fading edges. No black background, opaque white background, checkerboard painted pattern, ground, floor, environment, scene, objects, characters, weapon, train, poster, frame, card, text, symbols, numbers or watermark. No noisy particle cloud, tiny intricate ornament or excessive bloom. All artwork fully inside canvas with transparent margin. A centered circular TECHNOLOGY CHARGE RING, center EXACTLY at (512,512). Only FOUR thick clean arc segments forming one broken circle, alternating mint-green and warm-gold, with four large bright dots at cardinal intervals. Diameter around 640 pixels. LARGE EMPTY FULLY TRANSPARENT CENTER, transparent outside, a very subtle translucent light edge only immediately along arcs. Simple clean game effect, no circuitry, glyphs, text, thin concentric rings, ticks, extra tiny dots, background or icon frame.
+```
