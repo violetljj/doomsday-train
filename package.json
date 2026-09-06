@@ -4,9 +4,9 @@
   "creator": {
     "version": "3.8.8"
   },
-  "version": "0.5.1",
+  "version": "0.6.0",
   "private": true,
-  "description": "Endless eight-car train builder with adjacent support, weapon mutations and hand-painted twilight artwork",
+  "description": "Endless five-slot train builder with adjacent support, weapon mutations and hand-painted twilight artwork",
   "scripts": {
     "build:web": "powershell -ExecutionPolicy Bypass -File tools/build-web.ps1",
     "prepare:site": "node tools/prepare-site.mjs",

@@ -8,6 +8,14 @@ Choosing a duplicate car opens the workshop as usual. `mergePending(index)` is a
 
 ## Weapons and boss
 
-The cannon fires heavy shells at 390 speed. Ordinary cannon shells explode on their first impact: the direct target takes full snapshot damage and enemies within 45 take 55 percent. Rail shots travel at 620 speed and pierce in a narrow line. Special linked shell behavior remains unchanged.
+While damaged and in active combat, the train restores 1 HP every 5 simulated seconds, capped at maximum HP. Arrival, pause, supply, workshop and results do not advance recovery. Full HP clears stored recovery time; a fresh run resets it. Lethal damage resolves before regeneration, so it cannot revive a defeated train.
+
+The cannon fires heavy shells at 390 speed. Ordinary cannon shells explode on their first impact: the direct target takes full snapshot damage and enemies within 45 take 55 percent. Rail attacks resolve along a complete piercing beam, with 0.18 seconds of visual persistence.
 
 Boss slams occur every 6 seconds. The first boss wave deals 8 damage per slam, then damage rises by 2 per wave to a maximum of 16.
+
+## Presentation 0.6.0
+
+The active train has five slots. Repair and shield cars use dedicated roof-view painted modules (`afterglow-support-top-v08`), matching the camera of other combat equipment. Modifier offers use the 18-cell atlas (`afterglow-mods-v07`), with drawn fallbacks during loading. Flame bursts use four individually cropped stages (`afterglow-flame-v08`) plus ribbons and embers; the black sheet is rendered with additive blending. The UI uses the painted paper surface, restrained card fills, serif headings and sans-serif body text. See [production art notes](art-directions/production-v060.md).
+
+The first boss appears from the middle of the left or right edge (`x = ±285`, `y = -180`), so the entrance composition stays clear of the train. These changes are presentation-only unless noted above; combat state remains deterministic at 1×, 2× and 4×.

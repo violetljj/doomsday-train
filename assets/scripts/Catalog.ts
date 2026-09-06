@@ -1,18 +1,20 @@
-export type CarType = 'cannon' | 'flame' | 'fan' | 'tesla' | 'cryo' | 'rail' | 'prism' | 'acid';
+export type CarType = 'cannon' | 'flame' | 'fan' | 'tesla' | 'cryo' | 'rail' | 'prism' | 'acid' | 'repair' | 'shield';
 export type CarRole = 'offense' | 'buff' | 'debuff';
 export const ROLE_NAMES: Record<CarRole, string> = { offense: '进攻', buff: '增益', debuff: '减益' };
-export const CAR_TYPES: CarType[] = ['cannon', 'flame', 'fan', 'tesla', 'cryo', 'rail', 'prism', 'acid'];
+export const CAR_TYPES: CarType[] = ['cannon', 'flame', 'fan', 'tesla', 'cryo', 'rail', 'prism', 'acid', 'repair', 'shield'];
 export const CARS: Record<CarType, { name: string; description: string; color: string; role: CarRole }> = {
   cannon: { name: '火炮车', description: '发射缓速重型爆炸炮弹；命中后波及半径45内敌人。', color: '#FFC571', role: 'offense' },
   flame: { name: '喷火车', description: '持续喷射扇形火焰；相邻辅助车可强化喷火。', color: '#FF814E', role: 'offense' },
   fan: { name: '风扇车', description: '独立推开普通敌人，并为两侧相邻攻击车输送气流。', color: '#85E1CA', role: 'buff' },
   tesla: { name: '电弧车', description: '自动电击最近的三个目标；相邻辅助车可强化电弧。', color: '#C2AAFF', role: 'offense' },
   cryo: { name: '冰霜车', description: '独立造成低额冰伤并减速普通敌人，为相邻攻击车附加冰霜效果。', color: '#83D8FF', role: 'debuff' },
-  rail: { name: '轨道炮车', description: '发射高速细长的贯穿轨道弹，直线穿透敌群。', color: '#D6B99D', role: 'offense' },
+  rail: { name: '轨道炮车', description: '射出整束磁轨光束，瞬间贯穿直线上的敌群。', color: '#D6B99D', role: 'offense' },
   prism: { name: '棱镜车', description: '零伤害折光脉冲，为相邻进攻车分裂攻击。', color: '#EDB6ED', role: 'buff' },
   acid: { name: '蚀酸车', description: '低额酸伤并腐蚀敌人，削弱护盾与元素抗性。', color: '#B6D879', role: 'debuff' },
+  repair: { name: '维修车', description: '每8秒修复3点装甲；相邻武器发动回收攻击，额外修复装甲。', color: '#CFD5B4', role: 'buff' },
+  shield: { name: '护盾车', description: '每10秒补充12点护盾；相邻武器发动防卫攻击，额外充盾。', color: '#ACCEDC', role: 'buff' },
 };
-export type ModId = 'caliber' | 'fuel' | 'pressure' | 'voltage' | 'coolant' | 'resonance' | 'railpower' | 'prismfocus' | 'acidpotency' | 'rapid' | 'reach' | 'surge' | 'lanes' | 'scatter' | 'burst';
+export type ModId = 'caliber' | 'fuel' | 'pressure' | 'voltage' | 'coolant' | 'resonance' | 'railpower' | 'prismfocus' | 'acidpotency' | 'rapid' | 'reach' | 'surge' | 'lanes' | 'scatter' | 'burst' | 'repairkit' | 'capacitor';
 export const MODS: Record<ModId, { name: string; description: string; target: CarType | 'links'; mode?: 'cadence' | 'reach' | 'lanes' | 'burst' }> = {
   caliber: { name: '扩膛弹药', description: '现有火炮车升1级：炮弹伤害和火炮联动增强。', target: 'cannon' },
   fuel: { name: '高热燃料', description: '现有喷火车升1级：喷火与火系联动伤害提升。', target: 'flame' },
@@ -26,9 +28,11 @@ export const MODS: Record<ModId, { name: string; description: string; target: Ca
   rapid: { name: '自动供弹', description: '现有火炮攻击间隔每级缩短20%。', target: 'cannon', mode: 'cadence' },
   reach: { name: '延伸喷管', description: '现有喷火车及火流联动射程每级增加25%。', target: 'flame', mode: 'reach' },
   surge: { name: '快速放电', description: '现有电弧车攻击间隔每级缩短20%。', target: 'tesla', mode: 'cadence' },
-  lanes: { name: '并列磁轨', description: '现有轨道炮每级增加一条平行弹道，单发伤害和弹体缩小。', target: 'rail', mode: 'lanes' },
+  lanes: { name: '并列磁轨', description: '轨道炮每级增加一束平行光束，每束伤害和宽度降低。', target: 'rail', mode: 'lanes' },
   scatter: { name: '霰射弹仓', description: '现有火炮每级增加一发偏转炮弹，单发伤害和弹体缩小。', target: 'cannon', mode: 'burst' },
   burst: { name: '序列连发', description: '火炮每级追加一发延时连射，单发伤害降低；锁定本次瞄准方向。', target: 'cannon', mode: 'burst' },
+  repairkit: { name: '精密修复组', description: '现有维修车升1级：每次多修复1点，回收联动增强。', target: 'repair' },
+  capacitor: { name: '储能电容', description: '现有护盾车升1级：每次充盾增加4点，护盾上限增加4点。', target: 'shield' },
 };
 export interface Recipe { id: string; name: string; description: string; hint: string; a: CarType; b: CarType; directional: false; executor: CarType; }
 export const RECIPES: Recipe[] = [
@@ -49,6 +53,11 @@ export const RECIPES: Recipe[] = [
   { id: 'tesla-acid', name: '腐蚀传导', description: '腐蚀电流连击附近敌人，已腐蚀目标承受额外伤害。', hint: '让蚀酸辅助电弧。', a: 'tesla', b: 'acid', directional: false, executor: 'tesla' },
   { id: 'rail-acid', name: '溶蚀磁轨', description: '贯穿弹沿途腐蚀敌人，并造成酸性伤害。', hint: '让蚀酸辅助轨道炮。', a: 'rail', b: 'acid', directional: false, executor: 'rail' },
 ];
+for(const offense of ['cannon','flame','tesla','rail'] as CarType[]){
+  const names={cannon:'回收炮弹',flame:'余热回收',tesla:'电能回流',rail:'磁轨回收'};
+  RECIPES.push({id:`${offense}-repair`,name:names[offense as keyof typeof names],description:'武器追加一次回收攻击，同时修复2点装甲；每4秒发动。',hint:'让武器与维修车相邻。',a:offense,b:'repair',directional:false,executor:offense});
+  RECIPES.push({id:`${offense}-shield`,name:`防卫${offense==='cannon'?'炮击':offense==='flame'?'火流':offense==='tesla'?'电弧':'磁轨'}`,description:'武器追加一次防卫攻击，同时补充4点护盾；每4.5秒发动。',hint:'让武器与护盾车相邻。',a:offense,b:'shield',directional:false,executor:offense});
+}
 export function getRecipe(a: CarType, b: CarType): Recipe | null {
   if (a === b || (CARS[a].role === 'offense') === (CARS[b].role === 'offense')) return null;
   return RECIPES.find(r => (r.a === a && r.b === b) || (r.a === b && r.b === a)) || null;

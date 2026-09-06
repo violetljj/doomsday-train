@@ -1,8 +1,8 @@
 import { _decorator, Component, Node, Graphics, Color, UITransform, Label, Vec3, EventTouch,
-  resources, SpriteFrame, Sprite, view, ResolutionPolicy, game, Game as EngineGame, Layers, profiler, Material, gfx, Rect, EffectAsset, Vec4 } from 'cc';
+  resources, SpriteFrame, Sprite, view, ResolutionPolicy, game, Game as EngineGame, Layers, profiler, Material, gfx, Rect, EffectAsset, Vec4, Vec2 } from 'cc';
 import { Combat, SLOT_Y } from './Combat';
 import { renderPanel } from './PanelRenderer';
-import { CARS, RECIPES, CarType } from './Catalog';
+import { CARS, RECIPES, CarType, ModId } from './Catalog';
 const { ccclass } = _decorator;
 const C = { ink: '#1D1D2E', panel: '#302D43', edge: '#625C78', gold: '#E6B99D', cream: '#F0DFD0', muted: '#B9B3C4', teal: '#A8DADE', red: '#EA937F' };
 type Particle = { x: number; y: number; vx: number; vy: number; life: number; max: number; size: number; color: string };
@@ -50,6 +50,8 @@ export class Game extends Component {
   private unitPivots=new Map<SpriteFrame,[number,number]>();
   private slicedFrames:SpriteFrame[]=[];
   private fxFrames:SpriteFrame[]=[];
+  private flameFrames:SpriteFrame[]=[];
+  private modFrames=new Map<ModId|'repair',SpriteFrame>();
   private fxPool:Node[]=[];
   private fxUsed=0;
   private flowMaterial:Material|null=null;
@@ -57,7 +59,7 @@ export class Game extends Component {
   private readonly slotY = SLOT_Y;
   private readonly combatOffset=-(SLOT_Y[0]+SLOT_Y[SLOT_Y.length-1])/2;
   private entranceRemaining=0;
-  private supportEffects: {type:string;x:number;y:number;dx:number;dy:number;size:number;life:number;max:number;color?:string}[] = [];
+  private supportEffects: {type:string;x:number;y:number;dx:number;dy:number;size:number;life:number;max:number;color?:string;recipeId?:string}[] = [];
 
   onLoad() {
     profiler.hideStats();
@@ -109,14 +111,14 @@ export class Game extends Component {
     // Read-only diagnostic snapshot for smoke checks, without exposing state mutation.
     (globalThis as any).__doomsday = { snapshot: () => ({ phase:this.model.phase,
       time:this.model.time,wave:this.model.wave,entranceRemaining:this.entranceRemaining,cameraY:this.worldNode.position.y, hp:this.model.hp, kills:this.model.kills, enemies:this.model.enemies.length,
-      vortices:this.model.vortices.length, seed:this.model.initialSeed, fps:this.fps, speed:this.debugSpeed,
+      vortices:this.model.vortices.length, shield:this.model.shieldHp,maxShield:this.model.maxShield, seed:this.model.initialSeed, fps:this.fps, speed:this.debugSpeed,
       slots:this.model.slots.map((c,i)=>c?{id:c.id,type:c.type,level:c.level,mods:{...c.mods},range:this.model.getCarRange(i),angle:c.angle}:null),
       links:this.model.links.map(l=>({index:l.index,id:l.recipe.id,driver:l.driver,support:l.support})),pendingCar:this.model.pendingCar,
       offers:this.model.offers.slice(),scrap:this.model.scrap,nextScrap:this.model.nextScrap,supplyCount:this.model.supplyCount,
       knownRecipes:Array.from(this.knownRecipes),linkLevel:this.model.linkLevel,
       maxHp:this.model.maxHp,boss:this.model.boss?{hp:this.model.boss.hp,maxHp:this.model.boss.maxHp}:null,
       bossCharge:this.model.bossCharge,endReason:this.model.endReason,
-      art:{style:'afterglow',paper:!!this.paperArt,flow:!!this.flowMaterial,enemyKinds:Array.from(this.enemyFrames.keys()),menu:!!this.menuFrame,ground:!!this.groundArt,unitMaterial:!!this.unitMaterial,fx:this.fxFrames.length,activeFx:this.fxUsed,locomotive:!!this.loco,headVisible:!!this.loco?.active,zombie:!!this.zombieFrame,hull:!!this.hullFrame,weapons:Array.from(this.weaponFrames.keys()) },
+       art:{style:'afterglow',paper:!!this.paperArt,flow:!!this.flowMaterial,enemyKinds:Array.from(this.enemyFrames.keys()),menu:!!this.menuFrame,ground:!!this.groundArt,unitMaterial:!!this.unitMaterial,fx:this.fxFrames.length,flame:this.flameFrames.length,mods:this.modFrames.size,activeFx:this.fxUsed,locomotive:!!this.loco,headVisible:!!this.loco?.active,zombie:!!this.zombieFrame,hull:!!this.hullFrame,weapons:Array.from(this.weaponFrames.keys()) },
       effects:{particles:this.particles.length,defeated:this.defeated.length,chain:this.chain,
         feeds:this.supportEffects.filter(e=>e.type==='feed').map(e=>({fromY:e.y,toY:e.y+e.dy,life:e.life}))}, events:this.model.events.slice() }) };
   }
@@ -136,7 +138,9 @@ export class Game extends Component {
     const n=new Node('Text');n.layer=Layers.Enum.UI_2D; parent.addChild(n); const t=n.addComponent(UITransform);t.setContentSize(width,size*2.7);
     if(align==='left')t.setAnchorPoint(0,.5);
     n.setPosition(x,y,0);const l=n.addComponent(Label);l.string=text;l.fontSize=size;l.lineHeight=size*1.35;l.color=new Color(color);
-    l.fontFamily=font==='display'?'Noto Serif SC, Songti SC, SimSun, serif':'Microsoft YaHei, sans-serif';l.isBold=font==='body'&&size>=26;
+    // Cocos expects one canvas font family, not a CSS fallback list.
+    l.fontFamily=font==='display'?'serif':'sans-serif';l.isBold=false;
+    l.spacingX=font==='display'?1:.2;l.enableShadow=font==='display';l.shadowColor=new Color(8,10,18,100);l.shadowOffset=new Vec2(0,-1);l.shadowBlur=1;
     l.horizontalAlign=align==='left'?Label.HorizontalAlign.LEFT:Label.HorizontalAlign.CENTER;
     l.verticalAlign=Label.VerticalAlign.CENTER;l.overflow=Label.Overflow.SHRINK;l.enableWrapText=true;return l;
   }
@@ -155,7 +159,28 @@ export class Game extends Component {
     frame.packable=false;this.slicedFrames.push(frame);return frame;
   }
   private loadAfterglowArt() {
-    resources.load('art/afterglow-expansion-v05/spriteFrame',SpriteFrame,(err,frame)=>{
+    resources.load('art/afterglow-mods-v07/spriteFrame',SpriteFrame,(err,frame)=>{
+      if(err){console.error('Modifier artwork failed',err);return;}if(!this.isValid)return;
+      const frames=this.stripFrames(frame,6,3),ids:(ModId|'repair')[]=['caliber','fuel','pressure','voltage','coolant','resonance','railpower','prismfocus','acidpotency','rapid','reach','surge','lanes','scatter','burst','repairkit','capacitor','repair'];
+      ids.forEach((id,i)=>this.modFrames.set(id,frames[i]));this.state='';
+    });
+    resources.load('art/afterglow-support-top-v08/spriteFrame',SpriteFrame,(err,frame)=>{
+      if(err){console.error('Support artwork failed',err);return;}if(!this.isValid)return;
+      const frames=this.stripFrames(frame,2);
+      // Roof-view equipment shares the same camera and green-screen material
+      // as the other combat modules; side-view concepts stay in the art archive.
+      (['repair','shield'] as CarType[]).forEach((type,i)=>{this.unitFrames.add(frames[i]);this.weaponFrames.set(type,frames[i]);});this.state='';
+    });
+    resources.load('art/afterglow-flame-v08/spriteFrame',SpriteFrame,(err,frame)=>{
+      if(err){console.error('Flame artwork failed',err);return;}if(!this.isValid)return;
+      // Generated stages have unequal widths. Crop each full silhouette and
+      // exclude the sheet guides instead of truncating them with equal cells.
+      this.flameFrames=[[20,170,360,540],[392,170,416,540],[806,170,570,540],[1390,170,370,540]].map(([x,y,w,h])=>{
+        const cell=new SpriteFrame(),texture=frame.texture;
+        cell.reset({texture,rect:new Rect(x,y,w,h)});cell.packable=false;this.slicedFrames.push(cell);return cell;
+      });
+    });
+    resources.load('art/afterglow-expansion-v06/spriteFrame',SpriteFrame,(err,frame)=>{
       if(err){console.error('Expansion artwork failed',err);return;}if(!this.isValid)return;
       this.expansionAtlas=frame;this.finishExpansionArt();
     });
@@ -179,15 +204,16 @@ export class Game extends Component {
       if(err){console.error('Terrain artwork failed',err);return;}if(!this.isValid)return;
       this.groundArt=this.sprite('Painted ground',frame,720,1000,this.node);this.groundArt.setSiblingIndex(0);
     });
-    resources.load('art/afterglow-units/spriteFrame',SpriteFrame,(err,frame)=>{
+    resources.load('art/afterglow-units-v06/spriteFrame',SpriteFrame,(err,frame)=>{
       if(err){console.error('Unit artwork failed',err);return;}if(!this.isValid)return;
       this.unitAtlas=frame;this.finishUnitArt();
     });
     resources.load('afterglow-key',EffectAsset,(err,effect)=>{
       if(err){console.error('Unit material failed',err);return;}if(!this.isValid)return;
       this.unitMaterial=new Material();this.unitMaterial.initialize({effectAsset:effect,defines:{USE_TEXTURE:true}});this.finishUnitArt();this.finishExpansionArt();
+      for(const parent of [this.trainLayer,this.overlayNode])for(const n of parent.children){const s=n.getComponent(Sprite);if(s?.spriteFrame&&this.unitFrames.has(s.spriteFrame))s.customMaterial=this.unitMaterial;}
     });
-    resources.load('art/afterglow-fx/spriteFrame',SpriteFrame,(err,frame)=>{
+    resources.load('art/afterglow-fx-v06/spriteFrame',SpriteFrame,(err,frame)=>{
       if(err){console.error('Effect artwork failed',err);return;}if(!this.isValid)return;
       this.fxFrames=Array.from({length:8},(_,i)=>this.atlasCell(frame,i));this.state='';
     });
@@ -215,13 +241,21 @@ export class Game extends Component {
     for(const n of this.enemySprites.values())n.destroy();this.enemySprites.clear();this.state='';
   }
   /** Reuse effect sprites; their black source canvas vanishes through additive blending. */
+  private stripFrames(atlas:SpriteFrame,columns:number,rows=1) {
+    return Array.from({length:columns*rows},(_,i)=>{const frame=new SpriteFrame(),texture=atlas.texture;
+      const column=i%columns,row=Math.floor(i/columns),x=Math.round(texture.width*column/columns),right=Math.round(texture.width*(column+1)/columns);
+      const y=Math.round(texture.height*row/rows),bottom=Math.round(texture.height*(row+1)/rows);
+      frame.reset({texture,rect:new Rect(x,y,right-x,bottom-y)});frame.packable=false;this.slicedFrames.push(frame);return frame;});
+  }
   private artEffect(index:number,x:number,y:number,w:number,h=w,angle=0,alpha=1,tint='#FFFFFF') {
-    const frame=this.fxFrames[index];if(!frame||this.fxUsed>=100)return false;
+    const frame=index>=8?this.flameFrames[index-8]:this.fxFrames[index];if(!frame||this.fxUsed>=100)return false;
     let n=this.fxPool[this.fxUsed];
     if(!n){n=this.sprite('Painted effect',frame,w,h,this.vortexLayer);if(this.flowMaterial)n.getComponent(Sprite)!.customMaterial=this.flowMaterial;else this.emission(n.getComponent(Sprite)!);this.fxPool.push(n);}
     this.fxUsed++;n.active=true;n.setPosition(x,y,0);n.angle=angle;n.setScale(1,1,1);
     n.getComponent(UITransform)!.setContentSize(w,h);
-    const sprite=n.getComponent(Sprite)!;sprite.spriteFrame=frame;const color=new Color(tint);color.a=Math.round(255*Math.max(0,Math.min(1,alpha)));sprite.color=color;
+    const sprite=n.getComponent(Sprite)!;sprite.spriteFrame=frame;
+    if(index>=8||!this.flowMaterial)this.emission(sprite);else sprite.customMaterial=this.flowMaterial;
+    const color=new Color(tint);color.a=Math.round(255*Math.max(0,Math.min(1,alpha)));sprite.color=color;
     return true;
   }
   private emission(sprite:Sprite) {
@@ -347,6 +381,14 @@ export class Game extends Component {
         if(this.supportEffects.length>48)this.supportEffects.shift();
         continue;
       }
+      if(e.type==='chain-reaction'){
+        // A shared driver has multiple live recipes: surface that moment as a
+        // distinct beat so the player understands why a dense build spikes.
+        this.supportEffects.push({type:'blast',x:e.x,y:e.y,dx:0,dy:0,size:e.size,life:.42,max:.42,recipeId:e.recipeId});
+        this.shake=Math.max(this.shake,3);this.tone(180,.16,'sawtooth');
+        this.toast('链式共鸣 · 联动增幅');
+        continue;
+      }
       if(e.type==='link-shot'){
         const recipe=RECIPES.find(r=>r.id===e.recipeId),electric=recipe?.executor==='tesla';
         this.supportEffects.push({type:electric?'tesla':'thermal-shot',x:e.x,y:e.y,dx:e.dx??0,dy:e.dy??0,size:e.size,life:.24,max:.24});
@@ -354,9 +396,9 @@ export class Game extends Component {
       }
       const visualKind=e.type==='focused-flame'&&e.recipeId==='flame-prism'?'prismbeam':({fan:'wind','focused-flame':'beam','burning-arc':'tesla',conduction:'tesla',
         'burn-blast':'blast',thermal:'thermalburst',blizzard:'cryo',shatter:'iceblast'} as Record<string,string>)[e.type]||e.type;
-      if(['flame','tesla','cryo','wind','beam','prismbeam','blast','thermalburst','slam','iceblast','burn','acid','prism','regen','shield','brood','repair','cannon-impact'].includes(visualKind)){
-        const life=e.type==='flame'?.36:e.type==='tesla'?.24:e.type==='repair'?.8:e.type==='cannon-impact'?.38:.5;
-        this.supportEffects.push({type:visualKind,x:e.x,y:e.y,dx:e.dx??0,dy:e.dy??0,size:e.size,life,max:life});
+      if(['rail-beam','train-shield','flame','tesla','cryo','wind','beam','prismbeam','blast','thermalburst','slam','iceblast','burn','acid','prism','regen','shield','brood','repair','passive-repair','cannon-impact'].includes(visualKind)){
+        const life=e.type==='rail-beam'?.22:e.type==='flame'?.36:e.type==='tesla'?.24:e.type==='repair'?.8:e.type==='cannon-impact'?.38:.5;
+        this.supportEffects.push({type:visualKind,x:e.x,y:e.y,dx:e.dx??0,dy:e.dy??0,size:e.size,life,max:life,recipeId:e.recipeId});
         if(this.supportEffects.length>32)this.supportEffects.shift();
         if(e.type==='slam'){this.shake=9;this.tone(55,.25,'triangle');this.toast('首领冲击 · 护住列车');}
         if(e.type==='tesla')this.tone(320,.055,'triangle');
@@ -510,6 +552,7 @@ export class Game extends Component {
       this.line(d,[0,sourceY,side,sourceY,side,targetY,0,targetY],'#7BB5A633',2);
     }
     for(const p of m.projectiles){
+      if(p.beam)continue;
       const color=p.corrosion?'#D4C78B':p.element==='ice'?'#B5DFEA':p.kind==='pierce'?'#C9BDDB':p.element==='fire'?'#E9B191':p.element==='electric'?C.teal:C.gold;
       const length=Math.max(1,Math.hypot(p.dx,p.dy));
       const trail=p.kind==='pierce'?54:p.kind==='shatter'?32:22;
@@ -581,6 +624,11 @@ export class Game extends Component {
     if(type==='fan')this.drawFan(g,x,y,29*scale,this.visualTime*16);
     else if(type==='tesla'||type==='cryo')this.drawSupport(g,type,x,y,scale);
     else if(type==='flame')this.drawTurret(g,x,y,angle,scale);
+    else if(type==='rail')this.drawRail(g,x,y,scale,angle);
+    else if(type==='prism')this.drawPrism(g,x,y,scale);
+    else if(type==='acid')this.drawAcid(g,x,y,scale);
+    else if(type==='repair')this.drawRepair(g,x,y,scale);
+    else if(type==='shield')this.drawShield(g,x,y,scale);
     else{
       this.circle(g,x,y,29*scale,'#253B40');this.circle(g,x,y,23*scale,'#84958C');
       const dx=Math.cos(angle),dy=Math.sin(angle);
@@ -589,6 +637,48 @@ export class Game extends Component {
       this.circle(g,x-dx*10*scale,y-dy*10*scale,10*scale,'#4C6564');
       this.circle(g,x+dx*47*scale,y+dy*47*scale,6*scale,C.gold);
     }
+  }
+  private drawRail(g:Graphics,x:number,y:number,scale:number,angle:number) {
+    const c=Math.cos(angle),s=Math.sin(angle),p=(px:number,py:number)=>[x+(px*c-py*s)*scale,y+(px*s+py*c)*scale];
+    const poly=(v:number[],color:string)=>{const out:number[]=[];for(let i=0;i<v.length;i+=2)out.push(...p(v[i],v[i+1]));this.polygon(g,out,color);};
+    this.circle(g,x+2*scale,y-3*scale,31*scale,'#101D25');
+    poly([-28,-17,39,-17,46,-9,46,9,39,17,-28,17,-35,8,-35,-8],'#3D545A');
+    for(const off of[-10,10]){poly([-25,off-3,39,off-3,39,off+3,-25,off+3],'#AEC7C3');this.line(g,[...p(-25,off),...p(39,off)],'#CFEDE3',1.7*scale);}
+    for(const xx of[-20,20]){const q=p(xx,-20);this.circle(g,q[0],q[1],3.2*scale,'#D19A55');}
+    const muzzle=p(50,0);this.circle(g,muzzle[0],muzzle[1],8*scale,'#172C32');this.circle(g,muzzle[0],muzzle[1],3.2*scale,C.teal);
+  }
+  private drawPrism(g:Graphics,x:number,y:number,scale:number) {
+    const r=31*scale;
+    this.circle(g,x+2*scale,y-2*scale,r+6*scale,'#121C29');
+    this.polygon(g,[x,y-r,x+r*.65,y-r*.22,x+r*.47,y+r*.68,x,y+r,x-r*.52,y+r*.52,x-r*.7,y-r*.18],'#5D4E70');
+    this.polygon(g,[x,y-r*.78,x+r*.32,y-r*.12,x+r*.18,y+r*.53,x-r*.2,y+r*.28,x-r*.34,y-r*.2],'#E6B5D9');
+    this.line(g,[x,y-r*.78,x,y+r*.8],C.cream,2*scale);this.line(g,[x-r*.34,y-r*.2,x+r*.32,y-r*.12],C.cream+'B0',1.4*scale);
+    this.line(g,[x-r*1.15,y+r*.3,x-r*.48,y,x-r*1.12,y-r*.32],C.teal+'99',2*scale);
+    this.line(g,[x+r*1.15,y-r*.3,x+r*.48,y,x+r*1.12,y+r*.32],C.gold+'99',2*scale);
+  }
+  private drawAcid(g:Graphics,x:number,y:number,scale:number) {
+    const r=30*scale;
+    this.circle(g,x+2*scale,y-2*scale,r+5*scale,'#121C24');
+    this.polygon(g,[x-r*.34,y-r*.9,x+r*.34,y-r*.9,x+r*.26,y-r*.52,x+r*.58,y+r*.63,x+r*.4,y+r*.84,x-r*.4,y+r*.84,x-r*.58,y+r*.63,x-r*.26,y-r*.52],'#5A6A50');
+    this.polygon(g,[x-r*.47,y+r*.18,x+r*.47,y+r*.18,x+r*.4,y+r*.7,x-r*.4,y+r*.7],'#B7D26E');
+    this.line(g,[x-r*.26,y-r*.92,x+r*.26,y-r*.92],C.gold,4*scale);
+    this.circle(g,x-r*.18,y+r*.38,3.2*scale,'#EAF0B3');this.circle(g,x+r*.2,y+r*.53,2.2*scale,'#EAF0B3');
+    this.line(g,[x+r*.75,y-r*.18,x+r*1.05,y-r*.42],C.teal+'99',2*scale);
+  }
+  private drawRepair(g:Graphics,x:number,y:number,scale:number) {
+    const r=28*scale;this.circle(g,x+2*scale,y-2*scale,r+6*scale,'#111D22');
+    this.polygon(g,[x-r*.72,y-r*.57,x+r*.72,y-r*.57,x+r*.78,y+r*.6,x-r*.78,y+r*.6],'#788B7C');
+    this.line(g,[x-r*.56,y-r*.27,x+r*.56,y-r*.27],C.gold,2*scale);
+    this.line(g,[x-r*.38,y,x+r*.38,y],C.teal,5*scale);this.line(g,[x,y-r*.38,x,y+r*.38],C.teal,5*scale);
+    this.line(g,[x-r*.86,y+r*.78,x-r*.22,y+r*.12,x+r*.03,y+r*.35,x+r*.82,y-r*.45],C.cream,4*scale);
+    this.circle(g,x-r*.9,y+r*.78,3*scale,C.gold);this.circle(g,x+r*.82,y-r*.45,3*scale,C.gold);
+  }
+  private drawShield(g:Graphics,x:number,y:number,scale:number) {
+    const r=29*scale;this.circle(g,x+2*scale,y-2*scale,r+6*scale,'#101C28');
+    this.polygon(g,[x-r*.72,y-r*.68,x+r*.22,y-r*.68,x+r*.7,y-r*.2,x+r*.7,y+r*.62,x-r*.72,y+r*.62],'#4F6979');
+    this.circle(g,x-r*.08,y+r*.05,9*scale,'#203B4B');this.circle(g,x-r*.08,y+r*.05,4*scale,C.teal);
+    g.strokeColor=new Color('#BDEDF0CC');g.lineWidth=3*scale;g.arc(x+r*.08,y+r*.02,r*.98,-Math.PI*.82,Math.PI*.82,false);g.stroke();
+    this.line(g,[x-r*.62,y-r*.54,x+r*.32,y-r*.54],C.gold,2*scale);this.circle(g,x+r*.4,y-r*.54,3*scale,C.gold);
   }
   private drawTurret(g:Graphics,x:number,y:number,angle:number,scale:number) {
     const c=Math.cos(angle),s=Math.sin(angle);
@@ -737,8 +827,8 @@ export class Game extends Component {
       const cx=x+dx*(37+length*u)-dy*bend,cy=y+dy*(37+length*u)+dx*bend;
       const fade=(packet?Math.sin(Math.PI*progress):1)*(1-u*.65);
       const size=(22+u*48)*power,roll=angle+Math.sin(turn)*(.13+u*.35);
-      this.artEffect(3,cx,cy,size*1.45,size*.9,roll*180/Math.PI,fade*.48,'#EBA077');
-      this.artEffect(3,cx-dy*size*.13,cy+dx*size*.13,size,size*.48,(roll+.2)*180/Math.PI,fade*.36,'#F4CDA0');
+      const frame=this.flameFrames.length?8+Math.min(3,Math.floor((packet?progress:u)*4)):3;
+      this.artEffect(frame,cx,cy,size*1.65,size*1.2,roll*180/Math.PI,fade*.65,'#F2C5AD');
       const inkAlpha=Math.round(fade*120).toString(16).padStart(2,'0');
       this.ribbon(this.attacks,cx-dx*size*.3,cy-dy*size*.3,roll,size*.85,size*.16,turn,'#D78672'+inkAlpha);
       this.ribbon(this.attacks,cx-dx*size*.3,cy-dy*size*.3,roll-.1,size*.68,size*.07,turn+.5,'#FFE3B2'+inkAlpha);
@@ -755,7 +845,23 @@ export class Game extends Component {
     const g=this.fx;g.clear();
     for(const e of this.supportEffects){
       const t=1-e.life/e.max;
-      if(e.type==='flame'){
+      if(e.type==='rail-beam'){
+        const fade=Math.pow(1-t,1.8),color=e.recipeId?.includes('cryo')?'#B4DDEB':e.recipeId?.includes('acid')?'#D3D9A5':'#B4CDD9';
+        const length=Math.max(1,Math.hypot(e.dx,e.dy)),angle=Math.atan2(e.dy,e.dx);
+        const width=(t<.12?1+t*5:1.6-t)*Math.max(3,e.size*.45),alpha=Math.round(fade*210).toString(16).padStart(2,'0');
+        this.line(g,[e.x,e.y,e.x+e.dx,e.y+e.dy],color+Math.round(fade*52).toString(16).padStart(2,'0'),width*3.6);
+        // Two offset pigment strokes make the beam read as a painted ribbon,
+        // while the narrow ivory core preserves the high-energy focal line.
+        this.ribbon(g,e.x,e.y,angle,length,width*.42,this.visualTime*18,color+alpha);
+        this.line(g,[e.x,e.y,e.x+e.dx,e.y+e.dy],'#F4F1DD'+Math.round(fade*245).toString(16).padStart(2,'0'),Math.max(.6,width*.25));
+        const ex=e.x+e.dx,ey=e.y+e.dy;
+        this.artEffect(5,ex,ey,24+width*3,18+width*2,angle*180/Math.PI,fade*.7,color);
+        this.artEffect(5,e.x,e.y,18+width*2,14+width,angle*180/Math.PI+180,fade*.45,color);
+      }else if(e.type==='train-shield'){
+        for(const y of this.slotY){const fade=1-t,w=56+8*t;
+          this.line(g,[-w,y+38,-w-8,y+18,-w-8,y-24,-w,y-38],'#B9DCE2'+Math.round(fade*190).toString(16).padStart(2,'0'),2);
+          this.line(g,[w,y+38,w+8,y+18,w+8,y-24,w,y-38],'#B9DCE2'+Math.round(fade*190).toString(16).padStart(2,'0'),2);}
+      }else if(e.type==='flame'){
         this.flameJet(e.x,e.y,Math.atan2(e.dy,e.dx),e.size,this.visualTime,1,t);
       }else if(e.type==='cannon-impact'){
         const grow=1-Math.pow(1-t,3),r=e.size*grow;
@@ -766,7 +872,7 @@ export class Game extends Component {
           this.ribbon(g,x,y,q+Math.PI/2,7+12*grow,3*(1-t),j,'#D5AB8E88');
           this.line(g,[e.x+Math.cos(q)*r*.5,e.y+Math.sin(q)*r*.5,x,y],'#EAC9A7AA',2*(1-t)+.5);
         }
-      }else if(e.type==='repair'){
+      }else if(e.type==='repair'||e.type==='passive-repair'){
         for(const y of this.slotY)for(let j=0;j<3;j++){
           const u=(t+j/3)%1,x=-44+j*44,py=y-30+u*80,alpha=Math.round(Math.sin(Math.PI*u)*(1-t)*210).toString(16).padStart(2,'0');
           this.line(g,[x-5,py,x+5,py],'#A8DADE'+alpha,3);
@@ -846,24 +952,28 @@ export class Game extends Component {
     const g=this.hud,m=this.model;g.clear();
     const fighting=m.phase==='combat';
     for(const key of ['hp','kills','stage','form','hint','toast','chain','boss','reorder'])this.labels[key].node.active=fighting;
-    this.paintRect(g,-365,430,730,217,'#26243BEF');this.paintRect(g,-365,-645,730,222,'#26243BEF');
-    this.polygon(g,[-360,640,-220,640,-187,619,-241,610,-295,570,-360,566],'#6D546F55');
-    this.polygon(g,[130,-640,360,-640,360,-577,309,-565,275,-590,210,-595],'#6D546F44');
-    this.line(g,[-310,512,310,512],'#C0B2DB44',1);
-    this.line(g,[173,548,295,548],'#A8DADE55',1);
+    this.paintRect(g,-365,430,730,217,'#26243BD0');this.paintRect(g,-365,-645,730,222,'#26243BD0');
+    // Broken pigment tabs keep the HUD attached to the same paper language as
+    // the workshop cards, while the lower opacity lets the terrain breathe.
+    this.polygon(g,[-360,640,-220,640,-187,619,-241,610,-295,570,-360,566],'#6D546F3D');
+    this.polygon(g,[130,-640,360,-640,360,-577,309,-565,275,-590,210,-595],'#6D546F32');
+    this.line(g,[-310,512,310,512],'#C0B2DB55',1);
+    this.line(g,[173,548,295,548],'#A8DADE66',1);
+    this.line(g,[-303,468,-244,466,-198,469],'#E6C9B33D',1.5);
+    this.line(g,[194,-593,256,-596,310,-592],'#E6C9B32B',1.5);
     this.paintRect(g,-312,444,624,9,'#4A435E');this.paintRect(g,-312,444,624*m.hp/m.maxHp,9,m.hp>30?C.teal:C.red);
     for(let i=1;i<10;i++)this.rect(g,-312+i*62.4,446,2,9,C.ink);
     this.line(g,[-310,-510,310,-510],'#C0B2DB44',1);
     this.rect(g,-312,-527,624,3,'#4A435E');
     this.rect(g,-312,-527,624*(Math.min(1,m.scrap/m.nextScrap)),3,C.gold);
-    this.labels.hp.string=`装甲 ${Math.ceil(m.hp)}/${m.maxHp}`;this.labels.kills.string=`击破 ${m.kills}`;
+    this.labels.hp.string=`装甲 ${Math.ceil(m.hp)}/${m.maxHp}`;this.labels.kills.string=m.shieldHp>0?`护盾 ${Math.ceil(m.shieldHp)} · 击破 ${m.kills}`:`击破 ${m.kills}`;
     const elapsed=Math.floor(m.time+.00001);
     this.labels.time.string=`${Math.floor(elapsed/60).toString().padStart(2,'0')}:${(elapsed%60).toString().padStart(2,'0')}`;
     this.labels.stage.string=this.entranceRemaining>0?'列车驶入 · 准备迎敌':`第 ${m.wave} 波 · ${m.wave<2?'收集废料，组成车厢联动':m.wave<3?'护盾怪出现 · 蚀酸可穿盾':m.wave<4?'分裂怪出现 · 范围攻击清理幼体':'再生怪出现 · 燃烧抑制恢复'}`;
     this.labels.form.string=m.phase==='menu'?'进攻  /  增益  /  减益':m.slots.map(c=>c?CARS[c.type].name.replace('车',''):'空位').join(' — ');
     this.labels.hint.string=`废料 ${m.scrap}/${m.nextScrap} · ${m.links.length} 条联动`;
     if(fighting){
-      this.paintRect(g,122,-514,197,64,'#61687A99');
+      this.paintRect(g,122,-514,197,64,'#61687A78');
       this.line(g,[135,-513,304,-513],C.teal,2);
       this.line(g,[125,-475,132,-483,125,-491],C.teal,2);
       this.line(g,[310,-475,303,-483,310,-491],C.teal,2);
@@ -888,8 +998,11 @@ export class Game extends Component {
     }
   }
   private button(text:string,x:number,y:number,w:number,h:number,action:()=>void,accent=true) {
-    this.paintRect(this.overlay,x-w/2,y-h/2,w,h,accent?'#D5B5A4EC':'#443C5788');
-    this.line(this.overlay,[x-w/2+18,y-h/2+7,x-w*.12,y-h/2+5,x+w*.13,y-h/2+8],accent?'#5E536C88':'#9A859B66',1.5);
+    const wash=accent?'#D5B5A4D8':'#443C5768';
+    this.paintRect(this.overlay,x-w/2,y-h/2,w,h,wash);
+    this.line(this.overlay,[x-w/2+18,y-h/2+7,x-w*.12,y-h/2+5,x+w*.13,y-h/2+8],accent?'#5E536C99':'#9A859B77',1.5);
+    this.line(this.overlay,[x-w/2+28,y+h/2-8,x-w*.08,y+h/2-6,x+w*.31,y+h/2-9],accent?'#F3D7C055':'#CBBACF44',1);
+    this.line(this.overlay,[x-w/2+10,y-h/2+18,x-w/2+10,y+h/2-18],accent?'#F4D5BE66':'#A8DADE3D',1);
     this.label(this.overlayNode,text,x,y+1,28,accent?'#302A40':C.cream,w-30,'center','display');
     this.hitAreas.push({x,y,w,h,action});
   }
@@ -900,23 +1013,72 @@ export class Game extends Component {
     if(this.selectedSlot!==index)m.swapSlots(this.selectedSlot,index);
     this.selectedSlot=-1;
   }
+  /**
+   * Cards use an equipment emblem rather than a tiny carriage pasted over a
+   * coloured rectangle.  The irregular paper medallion gives every sprite a
+   * common visual language while leaving the hand-painted silhouette visible.
+   */
   private cardIcon(type:CarType,x:number,y:number,size:number) {
-    const weapon=this.weaponFrames.get(type);
-    if(weapon&&this.hullFrame){
-      const hull=this.sprite('Card hull',this.hullFrame,size*1.5,size*1.3,this.overlayNode);hull.setPosition(x,y,0);
-      const n=this.sprite(`Card ${type}`,weapon,size,size,this.overlayNode);n.setPosition(x,y,0);
+    const accent=CARS[type].color;
+    this.paintRect(this.overlay,x-size*.48,y-size*.48,size*.96,size*.96,'#1C2633B8');
+    this.circle(this.overlay,x,y,size*.37,'#111A2690');
+    const g=this.overlay;g.strokeColor=new Color(accent+'B0');g.lineWidth=Math.max(1.4,size*.018);
+    g.circle(x,y,size*.39);g.stroke();
+    this.line(g,[x-size*.39,y+size*.34,x-size*.16,y+size*.39,x+size*.12,y+size*.35],accent+'55',1.5);
+    this.line(g,[x+size*.26,y-size*.37,x+size*.41,y-size*.29],C.cream+'46',1.2);
+    const weapon=this.weaponFrames.get(type)||this.carIcons.get(type);
+    if(weapon){
+      const n=this.sprite(`Card ${type}`,weapon,size*.79,size*.79,this.overlayNode);n.setPosition(x,y,0);
+      n.getComponent(UITransform)!.setAnchorPoint(.5,.5);
       if(type==='cannon'||type==='flame')n.angle=90;
+      n.getComponent(Sprite)!.color=new Color(255,255,255,242);
       return;
     }
-    const frame=this.carIcons.get(type);
-    if(frame){const n=this.sprite(`Card ${type}`,frame,size,size,this.overlayNode);n.setPosition(x,y,0);}
-    else this.drawCarModule(this.overlay,type,x,y,size/125,Math.PI/2);
+    this.drawCarModule(this.overlay,type,x,y,size/125,Math.PI/2);
+  }
+
+  /** A readable hand-drawn fallback while an optional modifier atlas loads. */
+  private drawModIcon(type:ModId|'repair',x:number,y:number,size:number) {
+    const accent=(type==='repair'||type==='repairkit')?C.teal:
+      type==='fuel'?'#F08B50':type==='coolant'?'#9DDBEA':type==='voltage'||type==='surge'||type==='capacitor'?C.teal:
+      type==='acidpotency'?'#C7D98B':type==='prismfocus'?'#E3B5E2':type==='lanes'||type==='railpower'?'#C8D4DE':C.gold;
+    const r=size*.43;this.paintRect(this.overlay,x-r,y-r,r*2,r*2,'#1C2633B8');
+    const g=this.overlay;g.strokeColor=new Color(accent+'AA');g.lineWidth=Math.max(1.4,size*.018);g.circle(x,y,r*.84);g.stroke();
+    const s=size/100;
+    if(type==='repair'||type==='repairkit'){
+      this.line(g,[x-25*s,y,x+25*s,y],accent,6*s);this.line(g,[x,y-25*s,x,y+25*s],accent,6*s);
+      this.line(g,[x-26*s,y+22*s,x-5*s,y+3*s,x+4*s,y+12*s,x+28*s,y-15*s],C.cream,4*s);
+    }else if(type==='lanes'||type==='railpower'){
+      for(const off of[-13,0,13])this.line(g,[x-29*s,y+off*s,x+29*s,y+off*s],accent,4*s);
+      this.line(g,[x-31*s,y-22*s,x-20*s,y-30*s,x-7*s,y-22*s],C.cream,2*s);
+    }else if(type==='reach'){
+      this.line(g,[x-28*s,y+10*s,x+24*s,y+10*s],accent,10*s);this.line(g,[x+18*s,y-3*s,x+35*s,y+10*s,x+18*s,y+23*s],C.cream,3*s);
+      this.line(g,[x-27*s,y-10*s,x-4*s,y-10*s],C.cream,3*s);
+    }else if(type==='fuel'){
+      this.polygon(g,[x-8*s,y+27*s,x-22*s,y+2*s,x-8*s,y-9*s,x-4*s,y-30*s,x+13*s,y-7*s,x+23*s,y+3*s,x+8*s,y+27*s],'#E97843CC');
+      this.line(g,[x-3*s,y+17*s,x+5*s,y+2*s,x+2*s,y-12*s],C.cream,3*s);
+    }else if(type==='voltage'||type==='surge'||type==='capacitor'){
+      this.line(g,[x-25*s,y-14*s,x-8*s,y-14*s,x-17*s,y+5*s,x+3*s,y+5*s,x-7*s,y+26*s,x+27*s,y-2*s,x+10*s,y-2*s,x+20*s,y-23*s],accent,4*s);
+      this.circle(g,x-25*s,y-14*s,3*s,C.cream);this.circle(g,x+27*s,y-2*s,3*s,C.cream);
+    }else if(type==='caliber'||type==='rapid'||type==='scatter'||type==='burst'){
+      for(const off of[-16,0,16]){this.circle(g,x+off*s,y-3*s,7*s,'#A5A69A');this.line(g,[x+off*s-3*s,y-17*s,x+off*s+3*s,y-17*s],accent,3*s);}
+      if(type==='burst')this.line(g,[x-28*s,y+22*s,x-7*s,y+22*s,x+3*s,y+10*s,x+26*s,y+10*s],C.cream,3*s);
+    }else if(type==='prismfocus'){
+      this.polygon(g,[x,y-29*s,x+22*s,y,x,y+29*s,x-22*s,y],accent+'CC');
+      this.line(g,[x-35*s,y+18*s,x-8*s,y,x-35*s,y-18*s],C.cream,2*s);this.line(g,[x+35*s,y-18*s,x+8*s,y,x+35*s,y+18*s],C.cream,2*s);
+    }else if(type==='acidpotency'){
+      this.line(g,[x-12*s,y-27*s,x+12*s,y-27*s,x+8*s,y-17*s,x+19*s,y+22*s,x-19*s,y+22*s,x-8*s,y-17*s,x-12*s,y-27*s],accent,4*s);
+      this.circle(g,x-7*s,y+7*s,3*s,C.cream);this.circle(g,x+8*s,y+1*s,4*s,accent);
+    }else{
+      this.circle(g,x,y,17*s,'#9E8D68');this.circle(g,x,y,8*s,'#1C2633');
+      for(let i=0;i<6;i++){const a=i*Math.PI/3;this.circle(g,x+Math.cos(a)*23*s,y+Math.sin(a)*23*s,5*s,accent);}
+    }
   }
   private drawPanel() {
     for(const n of this.overlayNode.children.slice())n.destroy();
     this.overlay.clear();this.hitAreas=[];
     const m=this.model,g=this.overlay;
-    if(this.menuArt)this.menuArt.active=m.phase==='menu';
+    if(this.menuArt)this.menuArt.active=m.phase==='menu'&&!this.atlas;
     if(this.paperArt)this.paperArt.active=false;
     if(m.phase==='combat'){
       this.hitAreas.push({x:222,y:-483,w:197,h:64,action:()=>this.openWorkshop()});
@@ -925,11 +1087,20 @@ export class Game extends Component {
     renderPanel({model:m,knownRecipes:this.knownRecipes,newRecipes:this.newRecipes,
       atlas:this.atlas,atlasPage:this.atlasPage,atlasCars:this.atlasCars,selectedSlot:this.selectedSlot,
       draw:{
-        rect:(x,y,w,h,color,radius)=>this.paintRect(g,x,y,w,h,color),
+        rect:(x,y,w,h,color,radius)=>this.rect(g,x,y,w,h,color,radius),
         label:(text,x,y,size,color,width,align,font)=>{this.label(this.overlayNode,text,x,y,size,color,width,align,font);},
         art:(name)=>{if(name==='paper'){if(this.paperArt)this.paperArt.active=true;}else if(this.menuArt)this.menuArt.active=true;},
         button:(text,x,y,w,h,action,accent)=>this.button(text,x,y,w,h,action,accent),
         cardIcon:(type,x,y,size)=>this.cardIcon(type,x,y,size),
+        modIcon:(type,x,y,size)=>{
+          const frame=this.modFrames.get(type);
+          if(frame){
+            this.paintRect(this.overlay,x-size*.48,y-size*.48,size*.96,size*.96,'#1C2633B8');
+            const n=this.sprite('Modification',frame,size*.82,size*.82,this.overlayNode);n.setPosition(x,y,0);
+            n.getComponent(UITransform)!.setAnchorPoint(.5,.5);
+            n.getComponent(Sprite)!.color=new Color(255,255,255,238);
+          }else this.drawModIcon(type,x,y,size);
+        },
         line:(points,color,width)=>this.line(g,points,color,width),
         circle:(x,y,r,color)=>this.circle(g,x,y,r,color),
         addHitArea:(x,y,w,h,action)=>{this.hitAreas.push({x,y,w,h,action});}

@@ -26,7 +26,7 @@ arrival.start(138,true);assert.equal(arrival.enemies.length,0);assert.equal(arri
 const singleVortex=(id,x,y)=>({id,x,y,dx:0,dy:0,life:10,maxLife:10,age:0,radius:76,tick:100,damage:13,kind:'fire',element:'fire'});
 const shell=(id,kind='cannon',extra={})=>({id,x:190,y:40,dx:390,dy:0,life:2,radius:12,kind,damage:30,element:'physical',hitIds:[],...extra});
 
-assert.equal(CAR_TYPES.length,8);assert.equal(Object.keys(MODS).length,15);assert.equal(RECIPES.length,16);
+assert.equal(CAR_TYPES.length,10);assert.equal(Object.keys(MODS).length,17);assert.equal(RECIPES.length,24);
 assert.equal(ROLE_NAMES.offense,'进攻');
 assert.deepEqual(SLOT_Y,[40,-70,-180,-290,-400]);assert.equal(new Combat().slots.length,5);
 const pairIds=new Set();
@@ -35,7 +35,7 @@ for(const a of CAR_TYPES){assert.ok(CARS[a].name&&CARS[a].color);assert.equal(ge
  if(!allowed){assert.equal(r,null,`${a}/${b} is not an offense-support pair`);continue;}
  assert.ok(r);pairIds.add(r.id);assert.equal(getRecipe(b,a).id,r.id);assert.equal(r.directional,false);assert.equal(CARS[r.executor].role,'offense');
 }}
-assert.equal(pairIds.size,16);assert.equal(getRecipe('flame','fan').id,getRecipe('fan','flame').id);
+assert.equal(pairIds.size,24);assert.equal(getRecipe('flame','fan').id,getRecipe('fan','flame').id);
 
 // All five independent car actions work without an adjacent partner.
 const cannon=fixture();cannon.enemies=[enemy()];step(cannon);assert.equal(cannon.projectiles[0].kind,'cannon');step(cannon,20);assert.ok(cannon.enemies[0].hp<1000);
@@ -141,7 +141,7 @@ for(const recipe of RECIPES)for(const reversed of [false,true]){
  assert.ok(m.seenRecipes.has(recipe.id));assert.equal(m.events.filter(e=>e.type==='combo_discovered').length,1);
  const emitted=m.effects.filter(e=>e.recipeId===recipe.id);assert.equal(emitted[0].type,'link-feed','Support energy precedes the actual linked attack');assert.ok(emitted.every(e=>e.carSlot===driver));
  assert.equal(emitted[0].y,SLOT_Y[support]);assert.equal(emitted[0].dy,SLOT_Y[driver]-SLOT_Y[support]);
- for(const p of m.projectiles){assert.equal(p.carSlot,driver);const ox=p.x-p.dx/30,oy=p.y-p.dy/30-SLOT_Y[driver];assert.ok(Math.hypot(ox,oy)<=30+1e-9);assert.ok(Math.abs(ox*p.dx+oy*p.dy)<1e-6,'Parallel lanes originate perpendicular to the driver muzzle');}
+ for(const p of m.projectiles){assert.equal(p.carSlot,driver);const ox=p.x-(p.beam?0:p.dx/30),oy=p.y-(p.beam?0:p.dy/30)-SLOT_Y[driver];assert.ok(Math.hypot(ox,oy)<=30+1e-9);assert.ok(Math.abs(ox*p.dx+oy*p.dy)<1e-6,'Parallel lanes originate perpendicular to the driver muzzle');}
  if(['flame-cryo','fan-tesla'].includes(recipe.id)){const beam=emitted.find(e=>e.type==='link-shot');assert.ok(beam);assert.equal(beam.x,0);assert.equal(beam.y,SLOT_Y[driver]);assert.equal(beam.dx,200);assert.equal(beam.dy,-22.5-SLOT_Y[driver]);}
  for(const effect of emitted.filter(e=>e.type==='conduction'||e.type==='focused-flame'))assert.equal(effect.y,SLOT_Y[driver]);
  const kinds=[...new Set([...m.projectiles.map(p=>p.kind),...m.vortices.map(v=>v.kind)])];step(m,55);
@@ -219,6 +219,18 @@ const explosive=fixture();noBase(explosive);explosive.enemies=[enemy(900,200,40)
 const piercing=fixture(['rail']);noBase(piercing);piercing.enemies=[enemy(900,200,40),enemy(901,235,40)];piercing.projectiles=[shell(1,'pierce',{dx:620,radius:12,damage:30})];for(let i=0;i<3;i++)piercing.moveProjectiles(1/30);assert.ok(piercing.enemies.every(e=>e.hp===970));assert.ok(!piercing.effects.some(e=>e.type==='cannon-impact'));
 const restarted=fixture(['cannon','fan']);for(const id of Object.keys(MODS))restarted.slots[0].mods[id]=99;restarted.slots[0].level=99;restarted.linkLevel=99;restarted.projectiles=[shell(77)];restarted.vortices=[singleVortex(88,20,30)];restarted.effects=[{type:'upgrade',x:1,y:2,size:3}];restarted.events=[{type:'polluted',time:9,value:'old'}];restarted.burstQueue=[{ownerId:restarted.slots[0].id,delay:.1,angle:0,damage:9,radius:8}];restarted.carClocks.get(restarted.slots[0].id).cooldown=9;restarted.linkClocks.set('polluted',9);restarted.time=99;restarted.hp=1;restarted.kills=9;restarted.scrap=9;restarted.pendingCar='rail';restarted.offers=[{kind:'repair',id:'repair',amount:30}];restarted.bossSpawned=true;restarted.bossCharge=1;restarted.endReason='old';const priorRevision=restarted.revision;restarted.start(431);const fresh=new Combat();fresh.start(431);const {revision: restartedRevision,...restartedState}=restarted,{revision: freshRevision,...freshState}=fresh;assert.equal(restartedRevision,priorRevision+1);assert.equal(freshRevision,1);assert.deepEqual(restartedState,freshState);
 
+// Passive repair uses combat time, freezes in panels, caps at max HP and never revives.
+const service=fixture(['repair']);service.enemies=[];service.hp=50;step(service);assert.equal(service.hp,53);assert.equal(service.kills,0);assert.equal(service.projectiles.length,0);service.start();assert.equal(service.shieldHp,0);
+const guard=fixture(['shield']);guard.enemies=[];step(guard);assert.equal(guard.shieldHp,12);guard.damageTrain(8);assert.equal(guard.shieldHp,4);assert.equal(guard.hp,100);guard.damageTrain(10);assert.equal(guard.shieldHp,0);assert.equal(guard.hp,94);guard.chargeShield(100,0);assert.equal(guard.shieldHp,24);guard.start();assert.equal(guard.shieldHp,0);
+for(const support of ['repair','shield'])for(const reversed of [false,true]){const m=fixture(reversed?[support,'cannon']:['cannon',support]);noBase(m);m.hp=50;m.enemies=[enemy(900,200,-15)];face(m,m.enemies[0]);step(m);assert.ok(m.seenRecipes.has(`cannon-${support}`));assert.ok(support==='repair'?m.hp>50:m.shieldHp>0);assert.equal(m.projectiles[0].carSlot,reversed?1:0);}
+const bossSides=new Set();for(const seed of [137,138,139,140,141,142]){const m=new Combat();m.start(seed);m.spawnBoss();assert.equal(m.boss.y,-180);assert.equal(Math.abs(m.boss.x),285);bossSides.add(m.boss.x);}assert.equal(bossSides.size,2);
+const selfRepair=fixture();noBase(selfRepair);selfRepair.enemies=[];selfRepair.hp=98;
+step(selfRepair,149);assert.equal(selfRepair.hp,98);selfRepair.pause();selfRepair.advance(.1,2);assert.equal(selfRepair.hp,98);
+selfRepair.openWorkshop();selfRepair.advance(.1,2);assert.equal(selfRepair.hp,98);selfRepair.resumeWorkshop();step(selfRepair);assert.equal(selfRepair.hp,99);
+step(selfRepair,150);assert.equal(selfRepair.hp,100);step(selfRepair,150);assert.equal(selfRepair.hp,100);
+selfRepair.hp=99;step(selfRepair,149);assert.equal(selfRepair.hp,99);selfRepair.start(137,true);assert.equal(selfRepair.passiveRepairClock,0);assert.equal(selfRepair.advance(.1,2),0);
+const fatalRepair=fixture();fatalRepair.hp=5;fatalRepair.passiveRepairClock=5;fatalRepair.enemies=[enemy(900,0,40)];step(fatalRepair);assert.equal(fatalRepair.phase,'lose');assert.equal(fatalRepair.hp,0);
+
 function run(speed=1){
  const m=new Combat();m.start();let total=0,peakEnemies=0;const rewardTimes=[];
  for(let i=0;i<6000&&m.time<120-1e-8;i++){
@@ -243,4 +255,4 @@ for(const speed of[2,4])assert.deepEqual(state(run(speed)),state(result),`${spee
 const summary={wave:result.wave,bossKills:result.events.filter(e=>e.type==='boss_killed').length,choices:result.events.filter(e=>e.type==='offer_chosen').map(e=>({time:+e.time.toFixed(2),choice:e.value})),result:result.phase,reason:result.endReason,bossHp:result.boss?.hp,time:+result.time.toFixed(2),hp:result.hp,peakEnemies:result.testPeakEnemies,kills:result.kills,scrap:result.scrap,cars:result.slots.map(c=>c?({type:c.type,level:c.level,mods:c.mods}):null),linkLevel:result.linkLevel,links:result.links.map(l=>l.recipe.id),rewardTimes:result.testRewardTimes};
 result.start(27);assert.equal(result.time,0);assert.equal(result.hp,100);assert.equal(result.scrap,0);assert.equal(result.supplyCount,0);assert.equal(result.pendingCar,null);assert.equal(result.bossSpawned,false);assert.equal(result.endReason,'');assert.equal(result.seenRecipes.size,0);assert.equal(result.slots.length,SLOT_Y.length);assert.equal(result.slots.filter(Boolean).length,1);assert.equal(result.slots[0].type,'cannon');assert.equal(result.projectiles.length,0);assert.equal(result.vortices.length,0);assert.equal(result.linkLevel,0);
 result.seedSeenRecipes(['flame-fan','bogus']);assert.deepEqual([...result.seenRecipes],['flame-fan']);result.start();assert.equal(result.seenRecipes.size,0);
-console.log(JSON.stringify({checks:'8 role-based independent cars / 16 real recipes in both orders / correct offense emitter / five functional slots and four edges / two supports and shared fan / adjacency-empty-replacement / numerical mods remain available while mode mods cap / duplicate merge and repair offers / cannon blast and rail piercing / battle-only discoveries / resistance and control immunity / nearest bounded suction / real scrap and continuous rewards / smooth independent muzzles / pause-restart / 1-2-4 determinism / endless wave and elite cycles / 15 real modifiers and queued bursts',recipes:recipeResults,summary},null,2));
+console.log(JSON.stringify({checks:'10 role-based independent cars / 24 real recipes in both orders / correct offense emitter / five functional slots and four edges / repair and shield supports with shared links / adjacency-empty-replacement / numerical mods remain available while mode mods cap / duplicate merge and repair offers / cannon blast and rail beam / battle-only discoveries / resistance and control immunity / nearest bounded suction / real scrap and continuous rewards / smooth independent muzzles / pause-restart / 1-2-4 determinism / endless wave and elite cycles / 17 real modifiers and queued bursts',recipes:recipeResults,summary},null,2));

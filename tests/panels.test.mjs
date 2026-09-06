@@ -28,7 +28,7 @@ m.pendingCar='rail';draw();assert.ok(!buttons.some(b=>b.text==='合并升级'));
 buttons.find(b=>b.text==='插入新车').action();assert.equal(m.slots[0].type,'rail');assert.equal(m.slots[1].level,1);
 m.phase='menu';context.atlas=true;
 const directory=[];
-for(let page=0;page<3;page++){context.atlasPage=page;draw();directory.push(...labels);}
+for(let page=0;page<Math.ceil(CAR_TYPES.length/3);page++){context.atlasPage=page;draw();directory.push(...labels);}
 for(const type of CAR_TYPES)assert.ok(directory.includes(CARS[type].name));
 context.atlasCars=false;draw();assert.ok(labels.includes('联动图鉴'));
-console.log('Panel checks passed: mixed repairs, explicit merge vs insert, all eight car entries, recipe tab.');
+console.log('Panel checks passed: mixed repairs, explicit merge vs insert, all ten car entries, recipe tab.');

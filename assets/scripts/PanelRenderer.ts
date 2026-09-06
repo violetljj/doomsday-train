@@ -1,4 +1,4 @@
-import { CAR_TYPES, CARS, MODS, RECIPES, ROLE_NAMES } from './Catalog.ts';
+import { CAR_TYPES, CARS, MODS, RECIPES, ROLE_NAMES, getRecipe } from './Catalog.ts';
 import type { CarType, CarRole, ModId } from './Catalog.ts';
 import type { Combat } from './Combat.ts';
 
@@ -9,6 +9,7 @@ export interface PanelPrimitives {
   art?(name: string, x: number, y: number, w: number, h: number): void;
   button(text: string, x: number, y: number, w: number, h: number, action: () => void, accent?: boolean): void;
   cardIcon(type: CarType, x: number, y: number, size: number): void;
+  modIcon?(type: ModId | 'repair', x: number, y: number, size: number): void;
   line(points: number[], color: string, width: number): void;
   circle(x: number, y: number, radius: number, color: string): void;
   addHitArea(x: number, y: number, w: number, h: number, action: () => void): void;
@@ -41,7 +42,7 @@ export interface PanelContext {
 }
 
 const P = {
-  ink: '#191D2D', panel: '#252437C7', tile: '#52465BAA', edge: '#9CB9C04D',
+  ink: '#191D2D', panel: '#252437E8', tile: '#393548E8', edge: '#9CB9C04D',
   cream: '#F0DFD0', muted: '#B9B3C4', gold: '#DBB09F', teal: '#A8DADE',
   blue: '#C0B2DB', red: '#EF9A96', paper: '#F0DFD0',
   signal: '#A8DADE', warning: '#EF9A96',
@@ -69,33 +70,40 @@ function roleMark(d: PanelPrimitives, role: CarRole, x: number, y: number, r: nu
 
 function surface(d: PanelPrimitives) {
   d.art?.('paper', 0, 0, 720, 1280);
-  d.rect(-360, -535, 720, 1080, '#171A2C58', 0);
-  brush(d, -31, 391, 539, 10, '#E6C9B330');
-  brush(d, 52, -395, 470, 9, '#ACCEDC29');
+  // A low-opacity wash keeps the paper grain visible. The broken brush passes
+  // carry the edge of the panel so it reads as painted material rather than a
+  // single software rectangle.
+  d.rect(-320, -425, 640, 840, '#211F3278', 18);
+  brush(d, -28, 388, 536, 11, '#E6C9B326');
+  brush(d, 48, -393, 472, 9, '#ACCEDC22');
+  brush(d, -276, 66, 98, 4, '#DAB6A522');
+  brush(d, 272, -108, 116, 3, '#A8DADE1C');
 }
 
 function heading(d: PanelPrimitives, title: string, subtitle: string) {
-  brush(d, -144, 345, 288, 57, '#E3C8AF');
-  d.label(title, -268, 345, 44, '#342A38', 430, 'left', 'display');
+  d.label(title, -278, 348, 42, P.cream, 425, 'left', 'display');
+  brush(d, -210, 316, 137, 3, '#DBB09FAA');
   d.label('余晖防线', 223, 351, 20, P.muted, 112, 'center', 'display');
   brush(d, 224, 334, 102, 3, '#C7A8A47A');
-  d.label(subtitle, 0, 301, 20, P.muted, 570);
+  d.label(subtitle, 0, 294, 20, P.muted, 570);
 }
 
 /** Gouache note cards use paint weight and paper tabs, not technical outlines. */
 function inset(d: PanelPrimitives, x: number, y: number, w: number, h: number, color = P.tile) {
-  d.rect(x + 5, y - 4, w - 7, h, '#18162745', 0);
-  d.rect(x, y, w, h, color, 3);
-  // Broad warm/cool underpainting, intentionally separate from the lettering.
-  d.rect(x + 5, y + h * .27, w * .3, h * .69, '#AB87924D', 0);
-  d.rect(x + w * .55, y + 3, w * .4, h * .29, '#59698743', 0);
-  brush(d, x + w * .46, y + h - 4, w * .79, 5, '#BFA8B82B');
-  brush(d, x + w * .52, y + 4, w * .69, 5, '#14182938');
+  d.rect(x + 4, y - 4, w - 5, h, '#12111F66', 6);
+  d.rect(x, y, w, h, '#292739B8', 8);
+  d.rect(x + 1, y + 1, w - 2, h - 2, color, 5);
+  // Keep underpainting local and irregular so the card has a paper edge.
+  brush(d, x + w * .19, y + h * .58, Math.min(122, w * .25), h * .55, '#AB879226');
+  brush(d, x + w * .62, y + h - 3, w * .72, 2, '#BFA8B855');
+  brush(d, x + w * .51, y + 4, w * .56, 4, '#14182930');
+  d.line([x + 9, y + h - 8, x + w * .24, y + h - 6, x + w * .42, y + h - 9], '#E8C9B52C', 1);
 }
 
 function badge(d: PanelPrimitives, text: string, x: number, y: number, width: number, color: string, fontSize = 20) {
-  brush(d, x, y, width, 29, color);
-  d.label(text, x, y, fontSize, '#2A2B3C', width - 8, 'center', 'display');
+  brush(d, x, y-12, width*.74, 2, color+'77');
+  brush(d, x - width * .28, y - 3, width * .19, 1.2, color+'3D');
+  d.label(text, x, y+1, fontSize, color, width - 4, 'center', 'body');
 }
 
 function menu(c: PanelContext) {
@@ -182,11 +190,36 @@ function workshop(c: PanelContext) {
     const detail = detailId ? MODS[detailId].description : CARS[selectedCar.type].description;
     d.label(detail, -267, -13, 20, P.muted, 535, 'left');
   }
+  if (m.pendingCar && c.selectedSlot >= 0) {
+    const before = m.slots.map(car => car?.type ?? null);
+    const after = before.slice();
+    if (after[c.selectedSlot]) {
+      const right = after.indexOf(null, c.selectedSlot + 1);
+      const left = c.selectedSlot > 0 ? after.lastIndexOf(null, c.selectedSlot - 1) : -1;
+      if (right >= 0) for (let i = right; i > c.selectedSlot; i--) after[i] = after[i - 1];
+      else if (left >= 0) for (let i = left; i < c.selectedSlot; i++) after[i] = after[i + 1];
+    }
+    after[c.selectedSlot] = m.pendingCar;
+    const pairIds = (row: (CarType | null)[]) => row.slice(0, -1).map((a, i) => {
+      const b = row[i + 1]; return a && b ? getRecipe(a, b)?.id ?? null : null;
+    });
+    const oldPairs = pairIds(before), newPairs = pairIds(after);
+    const added = newPairs.filter((id, i) => id && id !== oldPairs[i]).map(id => RECIPES.find(r => r.id === id)?.name ?? id);
+    const broken = oldPairs.filter((id, i) => id && id !== newPairs[i]).map(id => RECIPES.find(r => r.id === id)?.name ?? id);
+    const action = canMerge ? `合并：${selectedCar!.level} → ${selectedCar!.level + 1} 级，保留 ${installed.length} 项词条与冷却` :
+      selectedCar ? (hasSpace ? '插入：旧车向空槽移位，原车与词条保留' : `替换：移除 ${CARS[selectedCar.type].name} 及其词条`) : '装入：占用此空槽，不影响其他车厢';
+    d.label('装入后预览', -267, -43, 19, P.gold, 535, 'left');
+    d.label(`${CARS[m.pendingCar].description}`, -267, -68, 18, ROLE_COLOR[CARS[m.pendingCar].role], 535, 'left');
+    d.label(action, -267, -91, 18, P.muted, 535, 'left');
+    d.label(`新增联动：${added.length ? added.join('、') : '无'}   ·   断开联动：${broken.length ? broken.join('、') : '无'}`, -267, -114, 18, added.length ? P.teal : P.muted, 535, 'left');
+  }
+  const hasPreview = !!m.pendingCar && c.selectedSlot >= 0;
+  const compactLinks = !!selectedCar || hasPreview;
   for (let i = 0; i < m.slots.length - 1; i++) {
-    const y = selectedCar ? -77 - i * 49 : 5 - i * 73;
+    const y = compactLinks ? (hasPreview ? -145 : -77) - i * 39 : 5 - i * 73;
     const link = links.find(l => l.index === i), recipe = link?.recipe;
     const known = !!recipe && c.knownRecipes.has(recipe.id);
-    brush(d, 0, y, 567, selectedCar ? 45 : 68, link ? '#49536A65' : '#39334755');
+    brush(d, 0, y, 567, compactLinks ? (hasPreview ? 36 : 45) : 68, link ? '#49536A65' : '#39334755');
     const routeColor = '#292A3A';
     brush(d, -255, y, 39, 35, link ? '#B8D4D2' : '#C6B7AB');
     brush(d, -193, y, 39, 35, link ? '#B8D4D2' : '#C6B7AB');
@@ -200,11 +233,11 @@ function workshop(c: PanelContext) {
     const relationship = link
       ? `#${link.support + 1} ${CARS[m.slots[link.support]!.type].name.replace('车', '')} → #${link.driver + 1} ${CARS[recipe!.executor].name.replace('车', '')}`
       : `${i + 1}号 — ${i + 2}号 · 独立工作`;
-    d.label(relationship, -159, y + (selectedCar ? 11 : 16), 20, P.muted, 425, 'left');
+    d.label(relationship, -159, y + (compactLinks ? (hasPreview ? 8 : 11) : 16), 20, P.muted, 425, 'left');
     const caption = recipe ? known ? recipe.name : `未知 · ${recipe.hint}`
       : !m.slots[i] || !m.slots[i + 1] ? '装入车厢，连接相邻槽位'
         : CARS[m.slots[i]!.type].role === 'offense' ? '相邻增益或减益车可辅助武器' : '辅助之间暂无联动，请搭配武器';
-    d.label(caption, -159, y - (selectedCar ? 11 : 14), 20, recipe ? known ? P.teal : P.gold : P.muted, 425, 'left');
+    d.label(caption, -159, y - (compactLinks ? (hasPreview ? 8 : 11) : 14), 20, recipe ? known ? P.teal : P.gold : P.muted, 425, 'left');
   }
   if (m.pendingCar) {
     if (c.selectedSlot >= 0) {
@@ -223,7 +256,7 @@ function workshop(c: PanelContext) {
 function atlas(c: PanelContext) {
   const d = c.draw, pages = Math.max(1, Math.ceil((c.atlasCars ? CAR_TYPES.length : RECIPES.length) / 3));
   const page = Math.max(0, Math.min(pages - 1, c.atlasPage));
-  heading(d, c.atlasCars ? '车厢图鉴' : '联动图鉴', c.atlasCars ? '8 种车厢 · 进攻 / 增益 / 减益' : `已发现 ${c.knownRecipes.size} / ${RECIPES.length} 种联动`);
+  heading(d, c.atlasCars ? '车厢图鉴' : '联动图鉴', c.atlasCars ? `${CAR_TYPES.length} 种车厢 · 进攻 / 增益 / 减益` : `已发现 ${c.knownRecipes.size} / ${RECIPES.length} 种联动`);
   d.button('车厢', -146, 255, 272, 48, () => c.actions.setAtlas(true, 0, true), c.atlasCars);
   d.button('联动', 146, 255, 272, 48, () => c.actions.setAtlas(true, 0, false), !c.atlasCars);
   if (c.atlasCars) CAR_TYPES.slice(page * 3, page * 3 + 3).forEach((type, i) => {
@@ -269,7 +302,9 @@ function supply(c: PanelContext) {
     brush(d, 246, y + 60, 52, 29, '#D8C1AB');
     d.label(`0${i + 1}`, 246, y + 60, 23, '#302B39', 55, 'center', 'display');
     if (isCar) d.cardIcon(offer.id as CarType, -207, y + 17, 124);
-    else {
+    else if(d.modIcon){
+      d.modIcon(isRepair?'repair':offer.id as ModId,-207,y+17,122);
+    }else {
       brush(d, -207, y + 17, 77, 63, '#C8A69B44');
       if (isRepair) roleMark(d, 'buff', -207, y + 17, 33, P.teal);
       else d.label('改', -207, y + 17, 36, P.cream, 85, 'center', 'display');
@@ -283,7 +318,7 @@ function supply(c: PanelContext) {
     d.addHitArea(0, y + 4, 568, 168, () => c.actions.chooseOffer(i));
   });
   d.label(`第 ${m.supplyCount} 次补给   ·   已收集 ${m.scrap} 废料`, 0, -336, 21, P.muted, 566);
-  d.label('点击整张卡片领取', 0, -373, 20, P.gold, 560);
+  d.label('行进中每 5 秒缓慢修复 1 点装甲', 0, -373, 20, P.gold, 560);
 }
 
 function pause(c: PanelContext) {
