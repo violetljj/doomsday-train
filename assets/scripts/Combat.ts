@@ -2,15 +2,16 @@ import { CAR_TYPES, CARS, MODS, RECIPES, getRecipe } from './Catalog.ts';
 import type { CarType, ModId, Recipe } from './Catalog.ts';
 
 export type Phase = 'menu' | 'combat' | 'supply' | 'workshop' | 'paused' | 'win' | 'lose';
-export type DamageType = 'physical' | 'fire' | 'electric' | 'ice';
-export interface Car { id: number; type: CarType; angle: number; previousAngle: number; flash: number; level: number; }
+export type DamageType = 'physical' | 'fire' | 'electric' | 'ice' | 'acid';
+export interface Car { id: number; type: CarType; angle: number; previousAngle: number; flash: number; level: number; mods: Partial<Record<ModId, number>>; }
 export interface Offer { kind: 'car' | 'mod'; id: CarType | ModId; }
-export interface Enemy { id: number; x: number; y: number; hp: number; maxHp: number; speed: number; kind: number; flash: number; slow?: number; freeze?: number; armorBreak?: number; burn?: number; burnDamage?: number; burnClock?: number; }
+export interface Enemy { id: number; x: number; y: number; hp: number; maxHp: number; speed: number; kind: number; flash: number; slow?: number; freeze?: number; armorBreak?: number; burn?: number; burnDamage?: number; burnClock?: number; corrosion?: number; barrier?: number; regenClock?: number; }
 export interface Effect { type: string; x: number; y: number; size: number; dx?: number; dy?: number; enemyKind?: number; recipeId?: string; carSlot?: number; }
 export interface Vortex { id: number; x: number; y: number; dx: number; dy: number; life: number; maxLife: number; age: number; radius: number; tick: number; damage: number; kind: 'fire' | 'electric'; element: 'fire' | 'electric'; recipeId?: string; carSlot?: number; }
-export interface Projectile { id: number; x: number; y: number; dx: number; dy: number; life: number; radius: number; kind: string; damage: number; element: DamageType; recipeId?: string; carSlot?: number; hitIds: number[]; burnDamage?: number; }
+export interface Projectile { id: number; x: number; y: number; dx: number; dy: number; life: number; radius: number; kind: string; damage: number; element: DamageType; recipeId?: string; carSlot?: number; hitIds: number[]; burnDamage?: number; corrosion?: number; slow?: number; freeze?: number; knockback?: number; frozenBonus?: number; }
 export const SLOT_Y = [40, -70, -180, -290, -400];
 const REWARDS = [8, 24, 48, 80, 120, 170];
+interface BurstShot { ownerId: number; delay: number; angle: number; damage: number; radius: number; }
 interface CarClock { cooldown: number; targetId: number | null; }
 
 /** Deterministic 30 Hz simulation. Every attack keeps its creation-time damage. */
@@ -25,8 +26,11 @@ export class Combat {
   seenRecipes = new Set<string>();
   bossSpawned = false; bossCharge = 0; endReason = '';
   private nextId = 0; private accumulator = 0; private spawnClock = 0; private bossClock = 0; private waveIndex = 0;
+  private encounterStarted = false; private nextBossWave = 3;
+  private burstQueue: BurstShot[] = [];
   private carClocks = new Map<number, CarClock>(); private linkClocks = new Map<string, number>();
 
+  get wave() { return 1 + Math.floor((this.time + 1e-8) / 20); }
   get boss(): Enemy | null { return this.enemies.find(e => e.kind === 3 && e.hp > 0) || null; }
   get links(): { index: number; recipe: Recipe; driver: number; support: number }[] {
     const result: { index: number; recipe: Recipe; driver: number; support: number }[] = [];
@@ -54,18 +58,26 @@ export class Combat {
     return values;
   }
   private makeCar(type: CarType): Car {
-    const car: Car = { id: this.nextId++, type, angle: 0, previousAngle: 0, flash: 0, level: 0 };
+    const car: Car = { id: this.nextId++, type, angle: 0, previousAngle: 0, flash: 0, level: 0, mods: {} };
     this.carClocks.set(car.id, { cooldown: 0, targetId: null }); return car;
   }
-  start(seed = 137) {
+  start(seed = 137, deferEncounter = false) {
     this.phase = 'combat'; this.previous = 'combat'; this.time = 0; this.hp = this.maxHp = 100; this.kills = this.scrap = 0;
     this.seed = seed >>> 0 || 137; this.initialSeed = this.seed; this.nextId = 0; this.accumulator = this.spawnClock = this.bossClock = this.waveIndex = 0;
     this.enemies = []; this.vortices = []; this.projectiles = []; this.effects = []; this.events = []; this.seenRecipes.clear();
     this.carClocks.clear(); this.linkClocks.clear(); this.slots = SLOT_Y.map(() => null); this.slots[0] = this.makeCar('cannon');
     this.pendingCar = null; this.offers = []; this.supplyCount = 0; this.nextScrap = REWARDS[0]; this.linkLevel = 0;
-    this.bossSpawned = false; this.bossCharge = 0; this.endReason = ''; this.revision++;
+    this.bossSpawned = false; this.bossCharge = 0; this.endReason = ''; this.nextBossWave = 3; this.burstQueue = []; this.revision++;
     this.events.push({ type: 'run_start', time: 0 });
+    this.encounterStarted = false;
+    if (!deferEncounter) this.startEncounter();
+  }
+  /** The presentation calls this after arrival; pause/re-entry cannot spawn the opening pack twice. */
+  startEncounter(): boolean {
+    if (this.encounterStarted || this.phase !== 'combat') return false;
+    this.encounterStarted = true;
     for (let i = 0; i < 5; i++) this.spawn(true);
+    return true;
   }
   seedSeenRecipes(ids: string[]) { for (const id of ids) if (RECIPES.some(r => r.id === id)) this.seenRecipes.add(id); }
   private linkKey(index: number, recipe: Recipe) {
@@ -80,6 +92,7 @@ export class Combat {
       const [a,b] = key.split(':').map(Number);
       if (!ids.has(a) || !ids.has(b)) this.linkClocks.delete(key);
     }
+    this.burstQueue = this.burstQueue.filter(shot => ids.has(shot.ownerId));
     this.freezeInterpolation(); this.revision++;
   }
   private validSlot(index: number) { return Number.isInteger(index) && index >= 0 && index < SLOT_Y.length; }
@@ -119,19 +132,23 @@ export class Combat {
   private availableMods(): ModId[] {
     return (Object.keys(MODS) as ModId[]).filter(id => {
       const target = MODS[id].target;
-      return target === 'links' ? this.links.length > 0 && this.linkLevel < 2 : this.slots.some(car => car && car.type === target && car.level < 2);
+      return target === 'links' ? this.links.length > 0 && this.linkLevel < 2 : this.slots.some(car => car && car.type === target && (MODS[id].mode ? (car.mods[id] || 0) < 2 : car.level < 2));
     });
   }
   private supply() {
     let cars: CarType[];
     if (this.supplyCount === 0) cars = ['fan', 'cryo', this.shuffle(CAR_TYPES.filter(t => CARS[t].role === 'offense'))[0]];
-    else cars = this.shuffle(CAR_TYPES).slice(0, 3);
+    else {
+      const offense = this.shuffle(CAR_TYPES.filter(t => CARS[t].role === 'offense'))[0];
+      const support = this.shuffle(CAR_TYPES.filter(t => CARS[t].role !== 'offense'))[0];
+      cars = [offense, support, this.shuffle(CAR_TYPES.filter(t => t !== offense && t !== support))[0]];
+    }
     this.offers = cars.map(id => ({ kind: 'car', id }));
     if (this.supplyCount >= SLOT_Y.length - 1) {
       const mods = this.availableMods();
       if (mods.length) this.offers[2] = { kind: 'mod', id: mods[Math.floor(this.random() * mods.length)] };
     }
-    this.supplyCount++; this.nextScrap = REWARDS[this.supplyCount] ?? Infinity; this.phase = 'supply'; this.revision++;
+    this.supplyCount++; this.nextScrap = REWARDS[this.supplyCount] ?? (170 + 60 * (this.supplyCount - REWARDS.length + 1)); this.phase = 'supply'; this.revision++;
     this.events.push({ type: 'supply_offer', time: this.time, value: String(this.supplyCount) });
   }
   chooseOffer(index: number): boolean {
@@ -145,7 +162,10 @@ export class Combat {
       if (!this.availableMods().includes(id)) return false;
       const target = MODS[id].target;
       if (target === 'links') this.linkLevel++;
-      else for (const car of this.slots) if (car?.type === target) car.level = Math.min(2, car.level + 1);
+      else for (const car of this.slots) if (car?.type === target) {
+        if (MODS[id].mode) car.mods[id] = Math.min(2, (car.mods[id] || 0) + 1);
+        else { car.level = Math.min(2, car.level + 1); car.mods[id] = car.level; }
+      }
       this.effects.push({ type: 'upgrade', x: 0, y: -145, size: 100 }); this.phase = 'combat';
     }
     this.events.push({ type: 'offer_chosen', time: this.time, value: `${offer.kind}:${offer.id}` });
@@ -155,7 +175,7 @@ export class Combat {
   resume() { if (this.phase === 'paused') { this.phase = this.previous; this.freezeInterpolation(); } }
   /** Clamp real frame time before scaling. Modal boundaries discard any unused simulation time. */
   advance(delta: number, speed = 1): number {
-    if (this.phase !== 'combat') return 0;
+    if (this.phase !== 'combat' || !this.encounterStarted) return 0;
     this.accumulator += (Number.isFinite(delta) ? Math.min(.1, Math.max(0, delta)) : 0) * (speed === 2 || speed === 4 ? speed : 1);
     let steps = 0;
     while (this.accumulator + 1e-10 >= 1 / 30 && this.phase === 'combat') {
@@ -165,25 +185,27 @@ export class Combat {
     return steps / 30;
   }
   private spawn(near = false) {
-    if (this.enemies.length >= (this.bossSpawned ? 100 : 99)) return;
+    if (this.enemies.length >= (this.boss ? 100 : 99)) return;
     const roll = this.random();
-    const kind = this.time >= 38 && roll < .12 ? 5 : this.time >= 30 && roll < .24 ? 4 : this.time >= 18 && roll < .37 ? 2 : this.time >= 12 && roll < .53 ? 1 : 0;
-    const hp = kind === 1 ? 17 : kind === 2 ? 48 : kind === 4 ? 30 : kind === 5 ? 32 : 24;
+    const kind = roll < .30 ? 0 : roll < .48 ? (this.time >= 12 ? 1 : 0) : roll < .60 ? (this.time >= 18 ? 2 : 0) : roll < .70 ? (this.time >= 30 ? 4 : 0) : roll < .80 ? (this.time >= 38 ? 5 : 0) : roll < .87 ? (this.wave >= 2 ? 6 : 0) : roll < .94 ? (this.wave >= 3 ? 7 : 0) : (this.wave >= 4 ? 8 : 0);
+    const hp = (kind === 1 ? 17 : kind === 2 ? 48 : kind === 6 ? 35 : kind === 7 ? 42 : kind === 8 ? 50 : kind === 4 ? 30 : kind === 5 ? 32 : 24) * (1 + .16 * (this.wave - 1));
     this.enemies.push({ id: this.nextId++, x: (this.random() > .5 ? 1 : -1) * (near ? 185 + this.random() * 75 : 370 + this.random() * 25),
-      y: -360 + this.random() * 680, hp, maxHp: hp, speed: kind === 1 ? 61 : kind === 2 ? 27 : 34, kind, flash: 0 });
+      y: -360 + this.random() * 680, hp, maxHp: hp, speed: kind === 1 ? 61 : kind === 2 ? 27 : 34, kind, flash: 0, barrier: kind === 6 ? 20 * (1 + .16 * (this.wave - 1)) : 0, regenClock: 2 });
   }
   private spawnBoss() {
-    this.bossSpawned = true; this.bossClock = 0; this.bossCharge = 0;
-    this.enemies.push({ id: this.nextId++, x: 285, y: 200, hp: 1400, maxHp: 1400, speed: 0, kind: 3, flash: 0 });
+    if(this.boss)return;
+    this.bossSpawned = true; this.bossClock = 0; this.bossCharge = 0; this.nextBossWave = this.wave + 3;
+    const hp = 1000 * (1 + .25 * Math.max(0,this.wave - 3));
+    this.enemies.push({ id: this.nextId++, x: 285, y: 200, hp, maxHp: hp, speed: 0, kind: 3, flash: 0 });
     this.events.push({ type: 'boss_spawn', time: this.time }); this.effects.push({ type: 'boss', x: 285, y: 200, size: 70 });
   }
   private bossRange(index: number): number {
     const car=this.slots[index]!;
-    if(car.type==='fan')return -1; // Boss is immune to the fan's independent push.
-    let range=car.type==='cannon'?780:car.type==='flame'?240:car.type==='tesla'?550:245;
+    if(car.type==='fan'||car.type==='prism')return -1; // Boss is immune to the fan's independent push.
+    let range=car.type==='rail'?1240:car.type==='cannon'?780:car.type==='flame'?240*this.reach(car):car.type==='tesla'?550:car.type==='acid'?260:245;
     for(const link of this.links)if(link.driver===index){
       const id=link.recipe.id;
-      range=Math.max(range,id==='cannon-fan'?1240:id==='cannon-cryo'?780:id==='flame-fan'?510:Infinity);
+      range=Math.max(range,id==='cannon-fan'?1240:id==='cannon-cryo'?780:id==='flame-fan'?510*this.reach(car):Infinity);
     }
     return range;
   }
@@ -196,21 +218,22 @@ export class Combat {
   }
   private step(dt: number) {
     this.time += dt;
-    if (!this.bossSpawned && this.time >= 60 - .00001) this.spawnBoss();
-    if (this.waveIndex < 3 && this.time >= [18, 38, 55][this.waveIndex] - .00001) {
-      const mark = [18,38,55][this.waveIndex++]; this.effects.push({ type: 'wave', x: 0, y: 260, size: mark }); this.events.push({ type: 'wave', time: this.time, value: String(mark) });
+    if (this.wave >= this.nextBossWave && !this.boss) this.spawnBoss();
+    if (this.wave > this.waveIndex) {
+      this.waveIndex = this.wave; this.effects.push({type:'wave',x:0,y:260,size:this.wave});
+      this.events.push({type:'wave',time:this.time,value:String(this.wave)});
     }
-    // Supported single-target weapons clear fewer bodies than the retired moving fire AoE.
-    // Keep sustained pressure near that throughput instead of accumulating a permanent 99-enemy backlog.
-    const rate = this.time < 8 ? 2.6 : this.time < 20 ? 4.5 : this.time < 40 ? 4.2 : this.time < 60 ? 5 : 3.5;
+    const rate = (this.time < 8 ? 2.6 : this.time < 20 ? 4.5 : 4.2) + Math.min(5, .35 * (this.wave - 1));
     this.spawnClock += dt * rate; while (this.spawnClock >= 1) { this.spawnClock--; this.spawn(); }
     for (const e of this.enemies) {
       if (e.hp <= 0) continue;
+      e.corrosion = Math.max(0,(e.corrosion||0)-dt);
       e.flash = Math.max(0,e.flash-dt); e.slow = Math.max(0,(e.slow||0)-dt); e.freeze = Math.max(0,(e.freeze||0)-dt); e.armorBreak = Math.max(0,(e.armorBreak||0)-dt);
       if ((e.burn || 0) > 0) {
         e.burn = Math.max(0,e.burn!-dt); e.burnClock = (e.burnClock ?? .5)-dt;
         if (e.burnClock <= .00001) { e.burnClock += .5; this.hit(e,e.burnDamage || 0,'fire',e.x-1,e.y); }
       }
+      if(e.kind===8) { e.regenClock=(e.regenClock??2)-dt; if(e.regenClock<=0){e.regenClock+=2;if(!(e.burn!>0)&&e.hp>0){const healed=Math.min(e.maxHp-e.hp,e.maxHp*.08);e.hp+=healed;if(healed>0)this.effects.push({type:'regen',x:e.x,y:e.y,size:healed});}} }
       if (e.hp <= 0 || e.kind === 3) continue;
       const tx = Math.sign(e.x)*42, ty = Math.max(SLOT_Y[SLOT_Y.length - 1],Math.min(120,e.y));
       const dx = tx-e.x, dy = ty-e.y, distance = Math.hypot(dx,dy);
@@ -218,6 +241,9 @@ export class Combat {
       else { const speed = (e.freeze!>0?0:e.slow!>0?.5:1)*e.speed; e.x += dx/distance*speed*dt; e.y += dy/distance*speed*dt; }
     }
     if (this.hp <= 0) return this.finish('lose','armor');
+    for(const shot of this.burstQueue)shot.delay-=dt;
+    for(const shot of this.burstQueue.filter(s=>s.delay<=1e-8)) { const slot=this.slots.findIndex(c=>c?.id===shot.ownerId);if(slot>=0){this.projectile(slot,'cannon',shot.damage,'physical',shot.angle);this.projectiles[this.projectiles.length-1].radius=shot.radius;this.effects.push({type:'fire',x:0,y:SLOT_Y[slot],size:18,dx:Math.cos(shot.angle),dy:Math.sin(shot.angle),carSlot:slot});}}
+    this.burstQueue=this.burstQueue.filter(s=>s.delay>1e-8);
     for (let i=0;i<SLOT_Y.length;i++) if(this.slots[i]) this.updateCar(i,dt);
     for (const [key,cooldown] of this.linkClocks) this.linkClocks.set(key,Math.max(0,cooldown-dt));
     for (const link of this.links) {
@@ -228,14 +254,25 @@ export class Combat {
     }
     this.moveProjectiles(dt); this.moveVortices(dt);
     this.enemies = this.enemies.filter(e=>e.hp>0);
-    if(this.bossSpawned&&!this.boss) return this.finish('win','boss');
+    if(!this.boss)this.bossCharge=0;
     if(this.boss) {
       this.bossClock += dt; this.bossCharge = Math.min(1,this.bossClock/4.5);
       if(this.bossClock>=4.5-.00001) { this.bossClock-=4.5;this.bossCharge=0;this.hp=Math.max(0,this.hp-16);this.effects.push({type:'slam',x:0,y:40,size:130});this.events.push({type:'boss_slam',time:this.time}); }
     }
     if(this.hp<=0) return this.finish('lose','armor');
-    if(this.time>=80-.00001) return this.finish('lose','timeout');
-    if(this.supplyCount<REWARDS.length&&this.scrap>=this.nextScrap) this.supply();
+    if(this.scrap>=this.nextScrap) this.supply();
+  }
+  getCarRange(slot:number):number { const car=this.slots[slot];if(!car)return 0;return car.type==='flame'?240*this.reach(car):car.type==='cannon'?780:car.type==='rail'?1240:car.type==='tesla'?550:car.type==='fan'?250:car.type==='cryo'?245:car.type==='acid'?260:100; }
+  private reach(car:Car) { return 1 + .25 * (car.mods.reach || 0); }
+  private basicShots(index:number,kind:string,damage:number) {
+    const car=this.slots[index]!,count=1+(car.mods[kind==='pierce'?'lanes':'scatter']||0),burst=kind==='cannon'?(car.mods.burst||0):0;
+    const perShot=damage/Math.sqrt(count)*(burst===1?.72:burst===2?.6:1),radius=(kind==='cannon'?8:12)/Math.sqrt(count);
+    for(let i=0;i<count;i++){
+      const angle=car.angle+(kind==='cannon'?(i-(count-1)/2)*.16:0);
+      this.projectile(index,kind,perShot,'physical',angle);const p=this.projectiles[this.projectiles.length-1];p.radius=radius;
+      if(kind==='pierce'){const offset=(i-(count-1)/2)*28;p.x-=Math.sin(angle)*offset;p.y+=Math.cos(angle)*offset;}
+      for(let j=1;j<=burst&&this.burstQueue.length<60;j++)this.burstQueue.push({ownerId:car.id,delay:.12*j,angle,damage:perShot,radius});
+    }
   }
   private updateCar(index:number,dt:number) {
     const car=this.slots[index]!, clock=this.carClocks.get(car.id)!;const y=SLOT_Y[index];
@@ -245,17 +282,24 @@ export class Combat {
     car.angle=this.arc(0,car.angle+Math.max(-10*dt,Math.min(10*dt,error*(1-Math.exp(-20*dt)))));
     if(clock.cooldown>0)return;
     const scale=1+car.level*.35, aligned=Math.abs(this.arc(car.angle,desired))<.2;
-    if((car.type==='cannon'||car.type==='flame'||car.type==='fan')&&!aligned)return;
+    if((car.type==='cannon'||car.type==='flame'||car.type==='fan'||car.type==='rail')&&!aligned)return;
     car.flash=.15;
-    if(car.type==='cannon') { clock.cooldown=.66;this.projectile(index,'cannon',26*scale,'physical',car.angle);this.directionEffect('fire',index,18); }
-    else if(car.type==='flame') { clock.cooldown=.2;this.cone(index,car.angle,240,.56,6*scale,'fire');this.directionEffect('flame',index,240); }
+    if(car.type==='cannon') { clock.cooldown=.66*Math.pow(.8,car.mods.rapid||0);this.basicShots(index,'cannon',26*scale);this.directionEffect('fire',index,18); }
+    else if(car.type==='flame') { clock.cooldown=.2;this.cone(index,car.angle,240*this.reach(car),.56,6*scale,'fire');this.directionEffect('flame',index,240*this.reach(car)); }
     else if(car.type==='fan') {
       clock.cooldown=.4;this.directionEffect('fan',index,250);
       for(const e of this.enemies) if(e.hp>0&&e.kind!==3&&Math.hypot(e.x,e.y-y)<250&&Math.abs(this.arc(car.angle,Math.atan2(e.y-y,e.x)))<.95)this.push(e,0,y,26*scale);
     } else if(car.type==='tesla') {
-      clock.cooldown=.95;
+      clock.cooldown=.95*Math.pow(.8,car.mods.surge||0);
       const targets=this.enemies.filter(e=>e.hp>0&&Math.hypot(e.x,e.y-y)<550).sort((a,b)=>Math.hypot(a.x,a.y-y)-Math.hypot(b.x,b.y-y)).slice(0,3);
       for(const e of targets){this.effects.push({type:'tesla',x:0,y,dx:e.x,dy:e.y-y,size:16*scale,carSlot:index});this.hit(e,16*scale,'electric',0,y,undefined,index);}
+    } else if(car.type==='rail') {
+      clock.cooldown=1.1;this.basicShots(index,'pierce',42*scale);this.directionEffect('pierce',index,30);
+    } else if(car.type==='prism') {
+      clock.cooldown=1.2;this.effects.push({type:'prism',x:0,y,size:100,carSlot:index});
+    } else if(car.type==='acid') {
+      clock.cooldown=1.4;this.effects.push({type:'acid',x:0,y,size:260,carSlot:index});
+      for(const e of this.enemies)if(e.hp>0&&Math.hypot(e.x,e.y-y)<260){e.corrosion=3;this.hit(e,3*scale,'acid',0,y,undefined,index);}
     } else {
       clock.cooldown=1.6;this.effects.push({type:'cryo',x:0,y,size:245,carSlot:index});
       for(const e of this.enemies)if(e.hp>0&&Math.hypot(e.x,e.y-y)<245){this.chill(e,1.8);this.hit(e,4*scale,'ice',0,y,undefined,index);}
@@ -266,7 +310,7 @@ export class Combat {
   }
   private cone(index:number,angle:number,range:number,width:number,damage:number,element:DamageType,recipeId?:string) {
     const y=SLOT_Y[index];
-    for(const e of this.enemies)if(e.hp>0&&Math.hypot(e.x,e.y-y)<range&&Math.abs(this.arc(angle,Math.atan2(e.y-y,e.x)))<width)this.hit(e,damage,element,0,y,recipeId,index);
+    for(const e of this.enemies)if(e.hp>0&&Math.hypot(e.x,e.y-y)<range&&Math.abs(this.arc(angle,Math.atan2(e.y-y,e.x)))<width){if(element==='fire')this.ignite(e,damage*.3);this.hit(e,damage,element,0,y,recipeId,index);}
   }
   private projectile(index:number,kind:string,damage:number,element:DamageType,angle:number,recipeId?:string,burnDamage?:number) {
     const speed=kind==='pierce'?620:390;
@@ -287,7 +331,7 @@ export class Combat {
     } else if(id==='cannon-cryo') {
       this.projectile(driver,'shatter',30*scale,'ice',car.angle,id);this.directionEffect('shatter',driver,24,id);
     } else if(id==='flame-fan') {
-      this.cone(driver,car.angle,510,.19,52*scale,'fire',id);this.directionEffect('focused-flame',driver,510,id);
+      this.cone(driver,car.angle,510*this.reach(car),.19,52*scale,'fire',id);this.directionEffect('focused-flame',driver,510*this.reach(car),id);
     } else if(id==='flame-cryo') {
       this.effects.push({type:'link-shot',x:0,y:originY,dx:target.x,dy:target.y-originY,size:8,recipeId:id,carSlot:driver});
       this.effects.push({type:'thermal',x:target.x,y:target.y,size:105,recipeId:id,carSlot:driver});
@@ -299,6 +343,33 @@ export class Combat {
     } else if(id==='tesla-cryo') {
       const targets=[target,...this.enemies.filter(e=>e.hp>0&&e.id!==target.id&&Math.hypot(e.x-target.x,e.y-target.y)<=165).slice(0,3)];
       for(const e of targets){const cold=(e.slow||0)>0||(e.freeze||0)>0;this.effects.push({type:'conduction',x:0,y:originY,dx:e.x,dy:e.y-originY,size:20,recipeId:id,carSlot:driver});this.hit(e,(cold?28:16)*scale,'electric',0,originY,id,driver);this.chill(e,2,e===target?1:0);}
+    }
+    if(id==='rail-fan'||id==='rail-cryo') {
+      this.projectile(driver,'pierce',48*scale,id==='rail-cryo'?'ice':'physical',car.angle,id);
+      const p=this.projectiles[this.projectiles.length-1];
+      if(id==='rail-cryo'){p.slow=2;p.freeze=1;p.frozenBonus=2;}else p.knockback=35;
+      this.directionEffect(id==='rail-cryo'?'shatter':'pierce',driver,32,id);
+    } else if(this.slots[support]!.type==='prism') {
+      if(car.type==='cannon'||car.type==='rail') {
+        for(const offset of[-30,0,30]){this.projectile(driver,car.type==='rail'?'pierce':'cannon',(car.type==='rail'?25:18)*scale,'physical',car.angle,id);const p=this.projectiles[this.projectiles.length-1];p.x-=Math.sin(car.angle)*offset;p.y+=Math.cos(car.angle)*offset;}
+        this.directionEffect('pierce',driver,32,id);
+      } else if(car.type==='flame') {
+        for(const offset of[-.32,0,.32])this.cone(driver,car.angle+offset,330*this.reach(car),.20,22*scale,'fire',id);
+        this.directionEffect('focused-flame',driver,330*this.reach(car),id);
+      } else {
+        const targets=this.enemies.filter(e=>e.hp>0&&Math.hypot(e.x,e.y-originY)<600).sort((a,b)=>Math.hypot(a.x,a.y-originY)-Math.hypot(b.x,b.y-originY)).slice(0,6);
+        for(const e of targets){this.effects.push({type:'conduction',x:0,y:originY,dx:e.x,dy:e.y-originY,size:18,recipeId:id,carSlot:driver});this.hit(e,18*scale,'electric',0,originY,id,driver);}
+      }
+    } else if(this.slots[support]!.type==='acid') {
+      if(car.type==='cannon'||car.type==='rail') {
+        this.projectile(driver,car.type==='rail'?'pierce':'cannon',38*scale,car.type==='rail'?'acid':'physical',car.angle,id);this.projectiles[this.projectiles.length-1].corrosion=4;this.directionEffect('acid',driver,32,id);
+      } else if(car.type==='flame') {
+        for(const e of this.enemies)if(e.hp>0&&Math.hypot(e.x,e.y-originY)<300*this.reach(car)&&Math.abs(this.arc(car.angle,Math.atan2(e.y-originY,e.x)))<.55){e.corrosion=4;this.ignite(e,8*scale);this.hit(e,24*scale,'fire',0,originY,id,driver);}
+        this.directionEffect('focused-flame',driver,300*this.reach(car),id);
+      } else {
+        const targets=[target,...this.enemies.filter(e=>e.hp>0&&e!==target&&Math.hypot(e.x-target.x,e.y-target.y)<180).slice(0,3)];
+        for(const e of targets){const corroded=(e.corrosion||0)>0;e.corrosion=4;this.effects.push({type:'conduction',x:0,y:originY,dx:e.x,dy:e.y-originY,size:22,recipeId:id,carSlot:driver});this.hit(e,(corroded?36:22)*scale,'electric',0,originY,id,driver);}
+      }
     }
     if(!this.seenRecipes.has(id)){this.seenRecipes.add(id);this.effects.push({type:'discovery',x:0,y:originY,size:100,recipeId:id,carSlot:driver});this.events.push({type:'combo_discovered',time:this.time,value:id});}
     return true;
@@ -313,10 +384,15 @@ export class Combat {
   private push(e:Enemy,x:number,y:number,amount:number) {if(e.kind===3||e.hp<=0)return;const dx=e.x-x,dy=e.y-y,d=Math.hypot(dx,dy);if(d>.001){e.x+=dx/d*amount;e.y+=dy/d*amount;}}
   private hit(e:Enemy,damage:number,element:DamageType,x:number,y:number,recipeId?:string,carSlot?:number) {
     if(e.hp<=0||damage<=0)return;
-    const resistance=element==='physical'&&e.kind===2&&!(e.armorBreak!>0)?.45:element==='fire'&&e.kind===4?.25:element==='electric'&&e.kind===5?.25:1;
-    e.hp-=damage*resistance;e.flash=.09;const dx=e.x-x,dy=e.y-y,d=Math.hypot(dx,dy);const nx=d>.001?dx/d:1,ny=d>.001?dy/d:0;
+    const resistance=(e.corrosion!>0)?1:element==='physical'&&e.kind===2&&!(e.armorBreak!>0)?.45:element==='fire'&&e.kind===4?.25:element==='electric'&&e.kind===5?.25:1;
+    let amount=damage*resistance;
+    if((e.barrier||0)>0){const absorbed=Math.min(e.barrier!,amount*(e.corrosion!>0?.25:1));e.barrier!-=absorbed;amount-=absorbed;this.effects.push({type:'shield',x:e.x,y:e.y,size:absorbed});}
+    e.hp-=amount;e.flash=.09;const dx=e.x-x,dy=e.y-y,d=Math.hypot(dx,dy);const nx=d>.001?dx/d:1,ny=d>.001?dy/d:0;
     this.effects.push({type:'hit',x:e.x,y:e.y,size:e.kind===3?10:5,dx:nx,dy:ny,enemyKind:e.kind,recipeId,carSlot});
-    if(e.hp<=0){this.kills++;this.scrap+=e.kind===3?5:1;this.effects.push({type:'kill',x:e.x,y:e.y,size:e.kind===3?70:e.kind===2?26:16,dx:nx,dy:ny,enemyKind:e.kind,recipeId,carSlot});}
+    if(e.hp<=0){
+      if(e.kind===3){this.bossCharge=0;this.events.push({type:'boss_killed',time:this.time,value:String(this.wave)});}
+      if(e.kind===7){this.effects.push({type:'brood',x:e.x,y:e.y,size:36});for(const offset of[-18,18])if(this.enemies.filter(v=>v.hp>0).length<(this.boss?100:99)){const hp=12*(1+.16*(this.wave-1));this.enemies.push({id:this.nextId++,x:e.x+offset,y:e.y+22,hp,maxHp:hp,speed:52,kind:1,flash:0});}}
+      this.kills++;this.scrap+=e.kind===3?5:1;this.effects.push({type:'kill',x:e.x,y:e.y,size:e.kind===3?70:e.kind===2?26:16,dx:nx,dy:ny,enemyKind:e.kind,recipeId,carSlot});}
   }
   private segmentDistance(x:number,y:number,ax:number,ay:number,bx:number,by:number) {
     const dx=bx-ax,dy=by-ay,length=dx*dx+dy*dy,t=length?Math.max(0,Math.min(1,((x-ax)*dx+(y-ay)*dy)/length)):0;
@@ -332,9 +408,9 @@ export class Combat {
           this.effects.push({type:'burn-blast',x:e.x,y:e.y,size:85,recipeId:p.recipeId,carSlot:p.carSlot});
           for(const other of this.enemies)if(other.hp>0&&Math.hypot(other.x-e.x,other.y-e.y)<=85){this.ignite(other,p.burnDamage||4);this.hit(other,p.damage,p.element,ox,oy,p.recipeId,p.carSlot);}
         }else{
-          const frozen=(e.freeze||0)>0;if(p.kind==='magnetic')e.armorBreak=3;
-          this.hit(e,p.damage*(p.kind==='shatter'&&frozen?2:1),p.element,ox,oy,p.recipeId,p.carSlot);
-          if(p.kind==='shatter')this.chill(e,2,1.3);
+          const frozen=(e.freeze||0)>0;if(p.kind==='magnetic')e.armorBreak=3;if(p.corrosion)e.corrosion=p.corrosion;
+          this.hit(e,p.damage*(frozen?(p.frozenBonus||(p.kind==='shatter'?2:1)):1),p.element,ox,oy,p.recipeId,p.carSlot);
+          if(p.kind==='shatter')this.chill(e,2,1.3);if(p.slow||p.freeze)this.chill(e,p.slow||0,p.freeze||0);if(p.knockback)this.push(e,ox,oy,p.knockback);
         }
         if(p.kind!=='pierce'){p.life=0;break;}
       }

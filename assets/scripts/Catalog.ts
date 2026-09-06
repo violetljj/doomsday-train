@@ -1,22 +1,34 @@
-export type CarType = 'cannon' | 'flame' | 'fan' | 'tesla' | 'cryo';
+export type CarType = 'cannon' | 'flame' | 'fan' | 'tesla' | 'cryo' | 'rail' | 'prism' | 'acid';
 export type CarRole = 'offense' | 'buff' | 'debuff';
 export const ROLE_NAMES: Record<CarRole, string> = { offense: '进攻', buff: '增益', debuff: '减益' };
-export const CAR_TYPES: CarType[] = ['cannon', 'flame', 'fan', 'tesla', 'cryo'];
+export const CAR_TYPES: CarType[] = ['cannon', 'flame', 'fan', 'tesla', 'cryo', 'rail', 'prism', 'acid'];
 export const CARS: Record<CarType, { name: string; description: string; color: string; role: CarRole }> = {
-  cannon: { name: '火炮车', description: '发射实体炮弹；相邻风扇或冰霜车可强化火炮。', color: '#FFC571', role: 'offense' },
-  flame: { name: '喷火车', description: '持续喷射扇形火焰；相邻风扇或冰霜车可强化喷火。', color: '#FF814E', role: 'offense' },
+  cannon: { name: '火炮车', description: '发射实体炮弹；相邻辅助车可强化火炮。', color: '#FFC571', role: 'offense' },
+  flame: { name: '喷火车', description: '持续喷射扇形火焰；相邻辅助车可强化喷火。', color: '#FF814E', role: 'offense' },
   fan: { name: '风扇车', description: '独立推开普通敌人，并为两侧相邻攻击车输送气流。', color: '#85E1CA', role: 'buff' },
-  tesla: { name: '电弧车', description: '自动电击最近的三个目标；相邻风扇或冰霜车可强化电弧。', color: '#C2AAFF', role: 'offense' },
+  tesla: { name: '电弧车', description: '自动电击最近的三个目标；相邻辅助车可强化电弧。', color: '#C2AAFF', role: 'offense' },
   cryo: { name: '冰霜车', description: '独立造成低额冰伤并减速普通敌人，为相邻攻击车附加冰霜效果。', color: '#83D8FF', role: 'debuff' },
+  rail: { name: '轨道炮车', description: '发射贯穿直线敌群的高速轨道弹。', color: '#D6B99D', role: 'offense' },
+  prism: { name: '棱镜车', description: '零伤害折光脉冲，为相邻进攻车分裂攻击。', color: '#EDB6ED', role: 'buff' },
+  acid: { name: '蚀酸车', description: '低额酸伤并腐蚀敌人，削弱护盾与元素抗性。', color: '#B6D879', role: 'debuff' },
 };
-export type ModId = 'caliber' | 'fuel' | 'pressure' | 'voltage' | 'coolant' | 'resonance';
-export const MODS: Record<ModId, { name: string; description: string; target: CarType | 'links' }> = {
+export type ModId = 'caliber' | 'fuel' | 'pressure' | 'voltage' | 'coolant' | 'resonance' | 'railpower' | 'prismfocus' | 'acidpotency' | 'rapid' | 'reach' | 'surge' | 'lanes' | 'scatter' | 'burst';
+export const MODS: Record<ModId, { name: string; description: string; target: CarType | 'links'; mode?: 'cadence' | 'reach' | 'lanes' | 'burst' }> = {
   caliber: { name: '扩膛弹药', description: '现有火炮车升1级：炮弹伤害和火炮联动增强。', target: 'cannon' },
   fuel: { name: '高热燃料', description: '现有喷火车升1级：喷火与火系联动伤害提升。', target: 'flame' },
   pressure: { name: '增压叶轮', description: '现有风扇车升1级：风压与气流联动增强。', target: 'fan' },
   voltage: { name: '高压线圈', description: '现有电弧车升1级：电伤和电系联动增强。', target: 'tesla' },
   coolant: { name: '低温冷剂', description: '现有冰霜车升1级：冰伤和冰系联动增强。', target: 'cryo' },
   resonance: { name: '同步传动', description: '所有相邻联动升1级：联动伤害提升。', target: 'links' },
+  railpower: { name: '磁轨增压', description: '现有轨道炮升1级：轨道弹与联动伤害提升。', target: 'rail' },
+  prismfocus: { name: '精磨晶面', description: '现有棱镜升1级：相邻折射联动伤害提升。', target: 'prism' },
+  acidpotency: { name: '浓缩蚀剂', description: '现有蚀酸车升1级：酸伤与腐蚀联动增强。', target: 'acid' },
+  rapid: { name: '自动供弹', description: '现有火炮攻击间隔每级缩短20%。', target: 'cannon', mode: 'cadence' },
+  reach: { name: '延伸喷管', description: '现有喷火车及火流联动射程每级增加25%。', target: 'flame', mode: 'reach' },
+  surge: { name: '快速放电', description: '现有电弧车攻击间隔每级缩短20%。', target: 'tesla', mode: 'cadence' },
+  lanes: { name: '并列磁轨', description: '现有轨道炮每级增加一条平行弹道，单发伤害和弹体缩小。', target: 'rail', mode: 'lanes' },
+  scatter: { name: '霰射弹仓', description: '现有火炮每级增加一发偏转炮弹，单发伤害和弹体缩小。', target: 'cannon', mode: 'burst' },
+  burst: { name: '序列连发', description: '火炮每级追加一发延时连射，单发伤害降低；锁定本次瞄准方向。', target: 'cannon', mode: 'burst' },
 };
 export interface Recipe { id: string; name: string; description: string; hint: string; a: CarType; b: CarType; directional: false; executor: CarType; }
 export const RECIPES: Recipe[] = [
@@ -26,6 +38,16 @@ export const RECIPES: Recipe[] = [
   { id: 'flame-cryo', name: '冷热爆破', description: '喷火车引爆目标区域；减速或冻结敌人承受双倍温差伤害。', hint: '用低温配合高热攻击。', a: 'flame', b: 'cryo', directional: false, executor: 'flame' },
   { id: 'fan-tesla', name: '聚怪电涡', description: '风扇强化电弧车，在目标处形成吸附并持续电击的气旋。', hint: '用气旋留住电流。', a: 'fan', b: 'tesla', directional: false, executor: 'tesla' },
   { id: 'tesla-cryo', name: '冻结传导', description: '冰霜强化电弧车，电流冻结首个目标并传给附近敌人。', hint: '让电流沿着冰霜传导。', a: 'tesla', b: 'cryo', directional: false, executor: 'tesla' },
+  { id: 'rail-fan', name: '风压磁轨', description: '气流强化轨道弹，贯穿并击退普通敌人。', hint: '让气流辅助轨道炮。', a: 'rail', b: 'fan', directional: false, executor: 'rail' },
+  { id: 'rail-cryo', name: '冰封磁轨', description: '轨道弹贯穿冻结敌群，对已冻结目标加伤。', hint: '让冰霜辅助轨道炮。', a: 'rail', b: 'cryo', directional: false, executor: 'rail' },
+  { id: 'cannon-prism', name: '折射弹幕', description: '火炮同时发射三道平行炮弹。', hint: '让棱镜辅助火炮。', a: 'cannon', b: 'prism', directional: false, executor: 'cannon' },
+  { id: 'flame-prism', name: '三重火扇', description: '喷火车分出三束窄火流并点燃目标。', hint: '让棱镜辅助喷火。', a: 'flame', b: 'prism', directional: false, executor: 'flame' },
+  { id: 'tesla-prism', name: '分光电网', description: '电流分裂，最多打击六个目标。', hint: '让棱镜辅助电弧。', a: 'tesla', b: 'prism', directional: false, executor: 'tesla' },
+  { id: 'rail-prism', name: '棱光磁轨', description: '轨道炮发射三道平行贯穿弹。', hint: '让棱镜辅助轨道炮。', a: 'rail', b: 'prism', directional: false, executor: 'rail' },
+  { id: 'cannon-acid', name: '蚀甲炮弹', description: '炮弹先腐蚀再命中，削弱护盾与抗性。', hint: '让蚀酸辅助火炮。', a: 'cannon', b: 'acid', directional: false, executor: 'cannon' },
+  { id: 'flame-acid', name: '腐燃火流', description: '火焰腐蚀并点燃敌群，持续压制再生。', hint: '让蚀酸辅助喷火。', a: 'flame', b: 'acid', directional: false, executor: 'flame' },
+  { id: 'tesla-acid', name: '腐蚀传导', description: '腐蚀电流连击附近敌人，已腐蚀目标承受额外伤害。', hint: '让蚀酸辅助电弧。', a: 'tesla', b: 'acid', directional: false, executor: 'tesla' },
+  { id: 'rail-acid', name: '溶蚀磁轨', description: '贯穿弹沿途腐蚀敌人，并造成酸性伤害。', hint: '让蚀酸辅助轨道炮。', a: 'rail', b: 'acid', directional: false, executor: 'rail' },
 ];
 export function getRecipe(a: CarType, b: CarType): Recipe | null {
   if (a === b || (CARS[a].role === 'offense') === (CARS[b].role === 'offense')) return null;
