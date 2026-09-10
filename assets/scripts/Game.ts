@@ -1,3 +1,4 @@
+import { UI_THEME } from './UiTheme.ts';
 import { _decorator, Component, Node, Graphics, Color, UITransform, Label, Vec3, EventTouch,
   resources, SpriteFrame, Sprite, view, ResolutionPolicy, game, Game as EngineGame, Layers, profiler, Material, gfx, Rect, EffectAsset, Vec4, Vec2, Font } from 'cc';
 import { Combat, SLOT_Y } from './Combat';
@@ -8,10 +9,10 @@ import { recommendSlot, linkChanges } from './ChoicePreview';
 import { CARS, RECIPES, CarType, ModId } from './Catalog';
 import { ENGINES } from './Locomotives';
 import type { EngineId } from './Locomotives';
-import { newGarage, readGarage, recordRun, selectGarageLoadout } from './Garage';
+import { newGarage, readGarage, recordRun, selectGarageLoadout, saveGarageToStorage } from './Garage';
 import { WORLDS, WORLD_IDS } from './Worlds';
 import type { WorldId } from './Worlds';
-import { ENEMY_LOOKS } from './EnemyPresentation';
+import { ENEMY_LOOKS, enemyContactSeconds } from './EnemyPresentation';
 const { ccclass } = _decorator;
 const C = { ink: '#102B2D', panel: '#183A3B', edge: '#61766B', gold: '#DAB979', cream: '#F4E4BE', muted: '#ACC0B0', teal: '#8FB6A7', red: '#CF5039' };
 type Particle = { x: number; y: number; vx: number; vy: number; life: number; max: number; size: number; color: string };
@@ -45,7 +46,7 @@ export class Game extends Component {
   private digitFrames:SpriteFrame[]=[];private digitSprites:Node[]=[];
   private hudVeil:Node|null=null;
   private titleFont:Font|null=null;private bodyFont:Font|null=null;
-  private garage=newGarage();private garageOpen=false;private runRecorded=true;
+  private garage=newGarage();private garageOpen=false;private historyOpen=false;private historyIndex=-1;private garageSaveFailed=false;private runRecorded=true;
   private engineFrames=new Map<EngineId,SpriteFrame>();private engineFlash=0;
   private chassisFrames=new Map<EngineId,SpriteFrame>();
   private chassisMaterial:Material|null=null;
@@ -56,6 +57,12 @@ export class Game extends Component {
   private lastLightUi:SpriteFrame[]=[];
   private lastLightFooterIcons:Node[]=[];
   private lastLightPanel:Node|null=null;
+  private instrumentFrame:SpriteFrame|null=null;
+  private instrumentHud:Node[]=[];
+  private instrumentHudUsed=0;
+  private goldActionFrame:SpriteFrame|null=null;
+  private railHeader:Node|null=null;
+  private railDock:Node|null=null;
   private lastLightReorder:Node|null=null;
   private frameCount = 0; private frameSeconds = 0; private fps = 0;
   private debugSpeed = 1;
@@ -67,6 +74,9 @@ export class Game extends Component {
   private workshopPositions = new Map<string,{x:number;y:number;targetX:number;targetY:number;nodes:Node[]}>();
   private firstWindFeed = false; private windLessonLife = 0; private windChainBest = 0;
   private windLessonText = '';
+  private shownCombatLinks = new Set<string>();
+  private comboNotices: {text:string;recipeId:string;driverId:number}[] = [];
+  private activeComboNotice: {text:string;recipeId:string;driverId:number}|null = null;
   private buildCelebration = 0;
   private celebratedMilestones = new Set<string>();
   private slotDrag = new SlotDrag();
@@ -84,6 +94,8 @@ export class Game extends Component {
   private groundArt:Node|null=null;
   private groundLoop:Node|null=null;
   private terrainFrames=new Map<WorldId,SpriteFrame>();
+  private requestedTerrain=new Set<WorldId>();
+  private terrainRetryAt=new Map<WorldId,number>();
   private menuArt:Node|null=null;
   private paperArt:Node|null=null;
   private workshopArt:Node|null=null;
@@ -146,8 +158,10 @@ export class Game extends Component {
     });
     this.labels.toast = this.label(this.node, '', 0, 375, 24, C.gold, 680);
     this.labels.windLesson = this.label(this.node, '', 0, 309, 24, C.teal, 620);
+    this.labels.threat = this.label(this.node, '', 0, -353, 23, C.gold, 600);
     this.labels.chain = this.label(this.node, '', 245, 305, 28, C.gold, 205);
     this.labels.boss = this.label(this.node, '', 0, 385, 19, C.red, 570);
+    this.labels.bossPhase = this.label(this.node, '', 191, 371, 19, C.gold, 232);
     this.overlayNode = new Node('Panels'); this.overlayNode.layer=Layers.Enum.UI_2D; this.node.addChild(this.overlayNode);
     this.overlayNode.addComponent(UITransform).setContentSize(720,1280);
     this.overlay = this.overlayNode.addComponent(Graphics);
@@ -159,7 +173,8 @@ export class Game extends Component {
     this.node.on(Node.EventType.TOUCH_CANCEL, this.touchCancel, this);
     this.node.on(Node.EventType.TOUCH_END, this.touch, this);
     game.on(EngineGame.EVENT_HIDE, this.hide, this);
-    try { const saved = globalThis.localStorage?.getItem('doomsday-settings'); if(saved){const v=JSON.parse(saved);this.sound=v.sound!==false;this.lowMotion=!!v.lowMotion;this.showDamage=v.showDamage!==false;} } catch {}
+    try { this.lowMotion=globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches??false; } catch {}
+    try { const saved = globalThis.localStorage?.getItem('doomsday-settings'); if(saved){const v=JSON.parse(saved);this.sound=v.sound!==false;if(typeof v.lowMotion==='boolean')this.lowMotion=v.lowMotion;this.showDamage=v.showDamage!==false;} } catch {}
     try {
       const current=globalThis.localStorage?.getItem('doomsday-recipes-v04');
       const saved=JSON.parse(current??globalThis.localStorage?.getItem('doomsday-recipes-v03')??'[]');
@@ -263,6 +278,26 @@ export class Game extends Component {
     return rects.map(([x,y,w,h])=>{const frame=new SpriteFrame();frame.reset({texture:atlas.texture,rect:new Rect(x,y,w,h)});frame.packable=false;this.slicedFrames.push(frame);return frame;});
   }
   private loadLastLightArt() {
+    for(const [path,key,rect] of [
+      ['rail-hud-instruments-v1','railHeader',[8,140,2156,392]],
+      ['rail-equipment-dock-v1','railDock',[18,170,2138,323]],
+    ] as const){
+      resources.load('art/'+path+'/spriteFrame',SpriteFrame,(err,atlas)=>{
+        if(err){console.error('Rail HUD asset failed',path,err);return;}if(!this.isValid)return;
+        const frame=this.cropArt(atlas,[[...rect]])[0];
+        if(key==='railDock'){this.goldActionFrame=this.cropArt(atlas,[[1585,187,546,283]])[0];this.goldActionFrame.insetLeft=this.goldActionFrame.insetRight=this.goldActionFrame.insetTop=this.goldActionFrame.insetBottom=55;}
+        const node=this.sprite(path,frame,672,672*rect[3]/rect[2],this.node);
+        node.setSiblingIndex(this.hud.node.getSiblingIndex());node.active=false;
+        this[key]=node;this.state='';
+      });
+    }
+
+    resources.load('art/rail-instrument-panel-v1/spriteFrame',SpriteFrame,(err,frame)=>{
+      if(err){console.error('Rail instrument panel failed',err);return;}if(!this.isValid)return;
+      frame.insetLeft=frame.insetRight=frame.insetTop=frame.insetBottom=90;
+      this.instrumentFrame=frame;this.state='';
+    });
+
     resources.load('afterglow-chassis-key',EffectAsset,(err,effect)=>{
       if(err||!this.isValid)return;
       this.chassisMaterial=new Material();this.chassisMaterial.initialize({effectAsset:effect,defines:{USE_TEXTURE:true}});
@@ -270,7 +305,7 @@ export class Game extends Component {
     });
     resources.load('art/lastlight-city-v1/spriteFrame',SpriteFrame,(err,frame)=>{
       if(err||!this.isValid)return;
-      for(const id of WORLD_IDS)this.terrainFrames.set(id,frame);
+      for(const id of WORLD_IDS)if(!this.terrainFrames.has(id))this.terrainFrames.set(id,frame);
       this.groundArt=this.sprite('The last light — flooded city',frame,720,1280,this.node);this.groundArt.setSiblingIndex(0);
       this.menuFrame=frame;this.menuArt=this.sprite('Last light title scene',frame,720,1280,this.node);this.menuArt.setSiblingIndex(this.hud.node.getSiblingIndex());
       this.paperArt=this.sprite('Ink city behind the ticket',frame,720,1280,this.node);this.paperArt.setSiblingIndex(this.hud.node.getSiblingIndex());this.paperArt.active=false;
@@ -485,10 +520,10 @@ export class Game extends Component {
     for(let i=2;i<points.length;i+=2)g.lineTo(points[i],points[i+1]);g.stroke();
   }
   private begin() {
-    this.finishRun();this.garageOpen=false;this.runRecorded=false;this.engineFlash=0;
+    this.finishRun();this.garageOpen=false;this.historyOpen=false;this.runRecorded=false;this.engineFlash=0;
     this.buildCelebration=0;this.celebratedMilestones.clear();
     this.assemblyRemaining=0;this.assemblyDepart=false;this.workshopPositions.clear();
-    this.firstWindFeed=false;this.windLessonLife=0;this.windChainBest=0;this.windLessonText='';
+    this.firstWindFeed=false;this.windLessonLife=0;this.windChainBest=0;this.windLessonText='';this.shownCombatLinks.clear();this.comboNotices=[];this.activeComboNotice=null;
     this.damageNumbers.clear();this.flameUntil=0;this.scrapPulse=0;
     this.unlockAudio();this.model.start(this.seed++,true,this.garage.loadout);this.particles=[];this.chain=0;this.chainLife=0;
     this.entranceRemaining=1;
@@ -503,12 +538,14 @@ export class Game extends Component {
     this.toast('击破敌人，收集改装废料');this.tone(180,.15);
   }
   private saveGarage() {
-    try{globalThis.localStorage?.setItem('doomsday-garage-v1',JSON.stringify(this.garage));}catch{}
+    try{this.garageSaveFailed=!saveGarageToStorage(globalThis.localStorage,this.garage);}catch{this.garageSaveFailed=true;}
   }
   private finishRun() {
     if(this.runRecorded||this.model.time<=0)return;
     this.garage=recordRun(this.garage,{time:this.model.time,wave:this.model.wave,kills:this.model.kills,
-      bosses:this.model.buildProgression.metrics.bossKills,recipes:Array.from(this.knownRecipes)});
+      bosses:this.model.buildProgression.metrics.bossKills,recipes:Array.from(this.knownRecipes),
+      engine:this.model.runLoadout?.engine||this.garage.loadout.engine,cars:this.model.slots,
+      outcome:this.model.phase==='lose'?'defeat':this.model.phase==='win'?'completed':'retired'});
     this.runRecorded=true;this.saveGarage();
   }
   private openWorkshop(slot=-1) {
@@ -678,6 +715,10 @@ export class Game extends Component {
     const frozen=['paused','workshop','supply'].includes(this.model.phase);
     if(!frozen)this.damageNumbers.advance(realDelta);
     if(!frozen)this.windLessonLife=Math.max(0,this.windLessonLife-realDelta);
+    const noticeIsCurrent=(notice:{recipeId:string;driverId:number})=>this.model.links.some(link=>link.recipe.id===notice.recipeId&&this.model.slots[link.driver]?.id===notice.driverId);
+    this.comboNotices=this.comboNotices.filter(noticeIsCurrent);
+    if(this.activeComboNotice&&!noticeIsCurrent(this.activeComboNotice)){this.activeComboNotice=null;this.windLessonLife=0;this.windLessonText='';}
+    if(!frozen&&this.windLessonLife<=0&&this.comboNotices.length){this.activeComboNotice=this.comboNotices.shift()!;this.windLessonText=this.activeComboNotice.text;this.windLessonLife=4;}
     if(!frozen)this.buildCelebration=Math.max(0,this.buildCelebration-realDelta);
     if(!frozen)this.engineFlash=Math.max(0,this.engineFlash-realDelta);
     this.scrapPulse=Math.max(0,this.scrapPulse-realDelta*3);
@@ -722,8 +763,11 @@ export class Game extends Component {
         const support=recipe&&(recipe.a===recipe.executor?recipe.b:recipe.a);
         const color=support?CARS[support].color:C.teal;
         this.supportEffects.push({type:'feed',x:e.x,y:e.y,dx:e.dx??0,dy:e.dy??0,size:20,life:.38,max:.38,color,recipeId:e.recipeId});
-        if(e.recipeId==='cannon-fan'&&!this.firstWindFeed){
-          this.firstWindFeed=true;this.windLessonText='风扇供能 → 火炮射出贯穿弹';this.windLessonLife=5;
+        const feedbackKey=`${e.recipeId}:${this.model.slots[e.carSlot??0]?.id}`;
+        if(recipe&&support&&!this.shownCombatLinks.has(feedbackKey)){
+          this.shownCombatLinks.add(feedbackKey);
+          this.comboNotices.push({text:`${recipe.name}发动 · ${CARS[support].name} → ${CARS[recipe.executor].name}`,recipeId:recipe.id,driverId:this.model.slots[e.carSlot??0]!.id});
+          if(e.recipeId==='cannon-fan')this.firstWindFeed=true;
         }
         if(this.supportEffects.length>48)this.supportEffects.shift();
         continue;
@@ -746,7 +790,7 @@ export class Game extends Component {
       }
       if(e.type==='region'){this.toast(`驶入 ${this.model.worldState.name} · ${this.model.worldState.enemyHint}`);this.formationSound();continue;}
       if(e.type==='demonstration-pack')continue;
-      if(e.type==='boss-charge'){this.toast('破阵者蓄力 · 即将冲击列车');this.tone(145,.3,'sawtooth');continue;}
+      if(e.type==='boss-charge'){this.toast(`${ENEMY_LOOKS[3].name}蓄力 · 即将冲击列车`);this.tone(145,.3,'sawtooth');continue;}
       if(e.type==='cold-shatter'){
         this.supportEffects.push({type:'iceblast',x:e.x,y:e.y,dx:0,dy:0,size:27,life:.38,max:.38,recipeId:e.recipeId});
         this.weaponSound('ice');continue;
@@ -755,7 +799,7 @@ export class Game extends Component {
       if(e.type==='pierce-hit'){
         this.supportEffects.push({type:'wind-impact',x:e.x,y:e.y,dx:e.dx??0,dy:e.dy??0,size:e.size,life:.45,max:.45,recipeId:e.recipeId});
         if(e.size>=2 && e.size>this.windChainBest){
-          this.windChainBest=e.size;this.windLessonText=`一弹贯穿 ${e.size} 名敌人 · 风扇 → 火炮`;this.windLessonLife=4;
+          this.activeComboNotice=null;this.windChainBest=e.size;this.windLessonText=`一弹贯穿 ${e.size} 名敌人 · 风扇 → 火炮`;this.windLessonLife=4;
           this.tone(850,.10,'triangle');
         }
         continue;
@@ -780,7 +824,7 @@ export class Game extends Component {
         if(e.type==='repair'){this.toast(`应急维修 · 装甲 +${e.size}`);this.tone(520,.22);}
         continue;
       }
-      if(e.type==='boss'){this.toast('精英破阵者 · 击破后继续前进');this.tone(95,.4,'triangle');continue;}
+      if(e.type==='boss'){this.toast(`精英${ENEMY_LOOKS[3].name} · 击破后继续前进`);this.tone(95,.4,'triangle');continue;}
       if(e.type==='wave'){
         this.toast(`第 ${this.model.wave} 波 · ${this.model.encounterBeat}`);
         this.tone(210,.28,'triangle');continue;
@@ -842,7 +886,7 @@ export class Game extends Component {
     this.drawGround();this.drawWorld();this.drawEffects();this.drawHUD();
     for(let i=this.fxUsed;i<this.fxPool.length;i++)this.fxPool[i].active=false;
     if(this.model.phase==='lose'||this.model.phase==='win')this.finishRun();
-    const nextState=`${this.model.phase}:${this.model.revision}:${this.selectedSlot}:${this.replacementConfirmed}:${this.atlas}:${this.atlasPage}:${this.atlasCars}:${this.knownRecipes.size}:${this.assemblyRemaining>0}:${this.garageOpen}:${this.garage.loadout.engine}:${this.garage.loadout.module}`;
+    const nextState=`${this.model.phase}:${this.model.revision}:${this.selectedSlot}:${this.replacementConfirmed}:${this.atlas}:${this.atlasPage}:${this.atlasCars}:${this.knownRecipes.size}:${this.assemblyRemaining>0}:${this.garageOpen}:${this.historyOpen}:${this.historyIndex}:${this.garageSaveFailed}:${this.garage.loadout.engine}:${this.garage.loadout.module}`;
     if(this.state!==nextState){this.state=nextState;this.drawPanel();}
     if(this.model.phase==='workshop'&&!this.atlas)for(const p of this.workshopPositions.values()){
       const blend=this.lowMotion?1:1-Math.exp(-realDelta*13);
@@ -851,14 +895,30 @@ export class Game extends Component {
       for(const node of p.nodes)if(node.isValid)node.setPosition(p.x,p.y,0);
     }
   }
+  private requestNearbyTerrain() {
+    const index=this.model.worldState.index;
+    for(const id of [WORLD_IDS[index],WORLD_IDS[(index+1)%WORLD_IDS.length]]){
+      if(id==='city'||this.requestedTerrain.has(id)||Date.now()<(this.terrainRetryAt.get(id)||0))continue;
+      this.requestedTerrain.add(id);
+      resources.load(`art/lastlight-${id}-v1/spriteFrame`,SpriteFrame,(err,frame)=>{
+        if(!this.isValid)return;
+        if(err){this.requestedTerrain.delete(id);this.terrainRetryAt.set(id,Date.now()+10000);console.error(`${id} background failed to load`,err);return;}
+        this.terrainRetryAt.delete(id);this.terrainFrames.set(id,frame);
+      });
+    }
+  }
   private drawGround() {
     const g=this.bg;g.clear();
     const shown=this.model.phase!=='menu';this.worldNode.active=shown;this.fx.node.active=shown;
     const visible=view.getVisibleSize(),cover=Math.max(1,visible.width/720,visible.height/1280);
     for(const art of [this.groundArt,this.menuArt,this.paperArt])if(art)art.getComponent(UITransform)!.setContentSize(720*cover,1280*cover);
-    if(this.groundArt){this.groundArt.active=true;this.groundArt.setPosition(0,0,0);}
+    if(this.groundArt){this.groundArt.active=true;this.groundArt.setPosition(0,0,0);
+      const frame=this.terrainFrames.get(shown?this.model.worldState.id:'city');
+      const sprite=this.groundArt.getComponent(Sprite)!;if(frame&&sprite.spriteFrame!==frame)sprite.spriteFrame=frame;
+    }
     else this.rect(g,-2000,-2000,4000,4000,C.ink);
     if(!shown)return;
+    this.requestNearbyTerrain();
     const travel=this.lowMotion?0:this.visualTime*16;
     // The scenic horizon stays still. Track joints and water wakes carry forward motion.
     for(const side of [-1,1]){
@@ -890,28 +950,64 @@ export class Game extends Component {
     const ids=new Set(m.enemies.map(e=>e.id));
     for(const [id,n]of this.enemySprites)if(!ids.has(id)){n.destroy();this.enemySprites.delete(id);}
     for(const e of m.enemies){
-      const size=e.kind===3?94:e.kind===2||e.kind>=6?60:49;
-      this.circle(g,e.x+3,e.y-5,size*.42,'#17162399');
+      const size=e.kind===3?90:e.kind===2||e.kind>=6?70:58;
+      const submerged=(e.surfaceWait??0)>0;
+      const rise=submerged?Math.max(0,1-e.surfaceWait!/.55):1;
+      const enemyFrame=this.enemyFrames.get(e.kind)||this.zombieFrame;
+      const bodyHeight=enemyFrame?size*1.5/Math.max(1,enemyFrame.rect.width/enemyFrame.rect.height):size;
+      const waterY=e.y-bodyHeight*.3;
+      // Elliptical surface marks stay in front of the emerging body; no full-sprite fade.
+      if(submerged || e.surfaceDuration){
+        const age=(e.surfaceDuration??0)-(e.surfaceWait??0);
+        const pulse=this.lowMotion?.35:((submerged?age:m.time)*1.4+e.id*.27)%1;
+        const radius=size*(e.kind===3?.7:.42);
+        a.strokeColor=new Color(submerged?'#D7E3C099':'#A9C9BB60');a.lineWidth=submerged?2:1;
+        a.ellipse(e.x,waterY,radius*(1+pulse*.5),radius*(.2+pulse*.1));a.stroke();
+        if(submerged){
+          a.strokeColor=new Color('#749F9899');a.ellipse(e.x,waterY,radius*.65,radius*.12);a.stroke();
+          for(let j=0;j<3;j++)this.circle(a,e.x+Math.sin(e.id+j*2.1)*radius*.6,waterY+3+j*3,1.5+(1-pulse),'#D7E3C099');
+        }else if(e.kind!==3){
+          this.line(g,[e.x+Math.sign(e.x)*8,waterY-3,e.x+Math.sign(e.x)*22,waterY-8],'#A9C9BB55',1.5);
+        }
+      }
+      if(!submerged){
+        const contact=enemyContactSeconds(e),urgent=contact<=2.2;
+        g.fillColor=new Color('#10292BBB');g.ellipse(e.x,waterY,size*.42,size*.12);g.fill();
+        a.strokeColor=new Color(urgent?'#FFB38EFF':ENEMY_LOOKS[e.kind].color+'B0');a.lineWidth=urgent?3:1.5;
+        a.ellipse(e.x,waterY,size*.43,size*.13);a.stroke();
+        if(urgent){
+          const inward=-Math.sign(e.x),tip=e.x+inward*(size*.45+10);
+          this.line(a,[tip-inward*8,waterY-7,tip,waterY,tip-inward*8,waterY+7],'#FFE1B8',3);
+        }
+        // Shape as well as colour distinguishes fast and armoured enemies on a phone.
+        if(e.kind===1){
+          for(let j=0;j<2;j++)this.line(a,[e.x-6,e.y+size*.61+j*7,e.x,e.y+size*.68+j*7,e.x+6,e.y+size*.61+j*7],'#FFE2A6',2);
+        }
+      }
       if((e.slow??0)>0){g.strokeColor=new Color('#8ADDEB88');g.lineWidth=2;g.circle(e.x,e.y,size*.58);g.stroke();}
       if(e.freeze>0){this.polygon(a,[e.x,e.y+size*.7,e.x+size*.55,e.y,e.x,e.y-size*.7,e.x-size*.55,e.y],'#87D9EF66');
         this.line(a,[e.x-size*.3,e.y+size*.15,e.x,e.y-size*.3,e.x+size*.22,e.y+size*.3],'#E7FFFF',2);}
-      if(e.kind===3){
+      if(e.kind===3&&!submerged){
         a.strokeColor=new Color('#F4785F33');a.lineWidth=10;a.circle(e.x,e.y,60);a.stroke();
         a.strokeColor=new Color(m.bossCharge>.72?C.red:C.gold);a.lineWidth=4;a.arc(e.x,e.y,60,-Math.PI/2,-Math.PI/2+Math.PI*2*Math.max(.01,m.bossCharge),false);a.stroke();
       }
-      const enemyFrame=this.enemyFrames.get(e.kind)||this.zombieFrame;
       if(enemyFrame){
         let n=this.enemySprites.get(e.id);if(!n){
           const ratio=enemyFrame.rect.width/enemyFrame.rect.height;
           n=this.sprite(ENEMY_LOOKS[e.kind].name,enemyFrame,size*1.5*Math.min(1,ratio),size*1.5/Math.max(1,ratio),this.enemyLayer);this.enemySprites.set(e.id,n);
         }
-        const gait=e.freeze>0?0:Math.sin(this.visualTime*12+e.id*2.4);
+        const gait=submerged||e.freeze>0||this.lowMotion?0:Math.sin(this.visualTime*12+e.id*2.4);
         const recoil=this.lowMotion?0:Math.sin(Math.min(1,e.flash/.1)*Math.PI)*3;
-        n.setPosition(e.x+Math.sign(e.x)*recoil,e.y+gait*1.6,0);n.angle=this.lastLightEnemyReady?gait*2:(Math.atan2(-180-e.y,-e.x)+Math.PI/2)*180/Math.PI+gait*5;
+        const sprite=n.getComponent(Sprite)!;
+        sprite.type=Sprite.Type.FILLED;
+        sprite.fillType=Sprite.FillType.VERTICAL;sprite.fillStart=1;sprite.fillRange=-rise*.8;
+        n.active=rise>0;
+        n.setPosition(e.x+Math.sign(e.x)*recoil,e.y+gait*1.6-(1-rise)*bodyHeight*.8,0);n.angle=this.lastLightEnemyReady?gait*2:(Math.atan2(-180-e.y,-e.x)+Math.PI/2)*180/Math.PI+gait*5;
         const squash=this.lowMotion?0:Math.min(1,e.flash/.1);
         n.setScale(1+squash*.12,1-squash*.055,1);
         n.getComponent(Sprite)!.color=new Color(e.flash>0?'#FFF0CD':e.freeze>0?'#A4E6F2':(e.slow??0)>0?'#BFDAE9':'#FFFFFF');
-      }else this.circle(g,e.x,e.y,size*.4,e.kind===4?C.gold:C.muted);
+      }else if(rise>0)this.circle(g,e.x,e.y-(1-rise)*size*.4,size*.4*rise,e.kind===4?C.gold:C.muted);
+      if(submerged)continue;
       if(e.kind===2||e.kind===4||e.kind===5){
         const color=e.kind===2?'#D2DFE5':e.kind===4?'#FFA552':'#C9A1ED';
         this.line(a,[e.x-8,e.y+24,e.x,e.y+32,e.x+8,e.y+24,e.x,e.y+17,e.x-8,e.y+24],color,3);
@@ -1512,71 +1608,104 @@ export class Game extends Component {
     }
     for(let i=digitUsed;i<this.digitSprites.length;i++)this.digitSprites[i].active=false;
   }
+  private instrumentPlate(node:Node,w:number,h:number,frame=this.instrumentFrame) {
+    const sprite=node.getComponent(Sprite)!;
+    sprite.spriteFrame=frame; sprite.customMaterial=null;
+    sprite.type=Sprite.Type.SLICED;
+    node.setScale(.18,.18,1);
+    node.getComponent(UITransform)!.setContentSize(w/.18,h/.18);
+  }
+  private hudPlate(x:number,y:number,w:number,h:number) {
+    if(!this.instrumentFrame){this.rect(this.hud,x,y,w,h,UI_THEME.panel,4);return;}
+    let node=this.instrumentHud[this.instrumentHudUsed++];
+    if(!node){node=this.sprite('Rail instrument',this.instrumentFrame,w,h,this.node);node.setSiblingIndex(this.hud.node.getSiblingIndex());this.instrumentHud.push(node);}
+    node.active=true;node.setPosition(x+w/2,y+h/2,0);this.instrumentPlate(node,w,h);
+  }
   private drawHUD() {
-    const g=this.hud,m=this.model;g.clear();
+    const C=UI_THEME,g=this.hud,m=this.model;g.clear();
+    this.instrumentHudUsed=0;for(const n of this.instrumentHud)n.active=false;
     const fighting=m.phase==='combat',power=m.buildPower,burst=power.overdrive;
+    const put=(key:string,text:string,x:number,y:number,size:number,width:number,color:string=C.cream,height=32)=>{
+      let label=this.labels[key];
+      if(!label)label=this.labels[key]=this.label(this.hud.node,'',x,y,size,color,width);
+      label.node.active=fighting;label.string=text;label.fontSize=size;label.lineHeight=size+3;
+      label.color=new Color(color);label.horizontalAlign=Label.HorizontalAlign.CENTER;
+      label.overflow=Label.Overflow.SHRINK;label.enableWrapText=false;
+      label.node.getComponent(UITransform)!.setAnchorPoint(.5,.5);
+      label.node.getComponent(UITransform)!.setContentSize(width,height);label.node.setPosition(x,y,0);
+    };
     if(this.hudVeil)this.hudVeil.active=false;
-    for(const key of ['hp','shield','kills','build','milestone','power','form','hint','toast','chain','boss','reorder','tag','time'])this.labels[key].node.active=fighting;
-    this.labels.stage.node.active=false;this.labels.brand.node.active=!this.lastLightTitle&&m.phase!=='menu';
-    if(this.lastLightTitle){this.lastLightTitle.active=m.phase!=='menu';this.lastLightTitle.setPosition(-236,576,0);this.lastLightTitle.getComponent(UITransform)!.setContentSize(220,90);this.lastLightTitle.getComponent(Sprite)!.customMaterial=this.chassisMaterial;}
-    if(this.lastLightTicket){this.lastLightTicket.active=fighting;this.lastLightTicket.setPosition(0,-493,0);this.lastLightTicket.getComponent(UITransform)!.setContentSize(704,218);this.lastLightTicket.getComponent(Sprite)!.customMaterial=this.chassisMaterial;}
-    if(this.lastLightReorder){this.lastLightReorder.active=fighting;this.lastLightReorder.getComponent(Sprite)!.customMaterial=this.chassisMaterial;}
-    this.labels.brand.string='末日列车';this.labels.brand.node.setPosition(-309,570,0);this.labels.brand.fontSize=40;
-    // Deliberately local information panels leave the sunset and the center lane open.
+    this.labels.brand.node.active=false;
+    if(this.lastLightTitle){this.lastLightTitle.active=!fighting&&m.phase!=='menu';this.lastLightTitle.setPosition(-236,576,0);this.lastLightTitle.getComponent(UITransform)!.setContentSize(220,90);this.lastLightTitle.getComponent(Sprite)!.customMaterial=this.chassisMaterial;}
+    if(this.lastLightTicket)this.lastLightTicket.active=false;
+    if(this.lastLightReorder)this.lastLightReorder.active=false;
+    if(this.railHeader){this.railHeader.active=fighting;this.railHeader.setPosition(0,550,0);}
+    if(this.railDock){this.railDock.active=fighting;this.railDock.setPosition(0,-519,0);}
+    if(fighting&&!this.railHeader)this.hudPlate(-336,489,672,122);
+    if(fighting&&!this.railDock)this.hudPlate(-336,-570,672,102);
+    const elapsed=Math.floor(m.time+.00001),xp=m.carRewardProgress;
+    put('time',Math.floor(elapsed/60).toString().padStart(2,'0')+':'+(elapsed%60).toString().padStart(2,'0'),-169,539,28,103);
+    put('tag','第 '+String(m.wave).padStart(2,'0')+' 波',-169,574,19,103,C.gold);
+    put('hp',Math.ceil(m.hp)+' / '+m.maxHp,29,548,24,151,m.hp>30?C.cream:C.red);
+    put('armorTitle','列车装甲',30,582,19,149);
+    put('shield','护盾 '+Math.ceil(m.shieldHp)+' / '+m.maxShield,0,506,17,192,C.teal);
+    put('form','经验 '+xp.current+' / '+xp.required,266,562,19,115);
+    put('milestone','词条 '+Math.ceil(m.modifierWait)+'秒',224,506,18,198,C.gold);
+    put('stage',m.worldState.name+'  /  击破 '+m.kills,0,460,18,600,C.muted);
+    this.labels.kills.node.active=false;
     if(fighting){
-      this.rect(g,-324,348,232,173,'#0C272AB8',1);
-      this.rect(g,-308,492,217,31,'#A83D2BEA',1);
-      this.rect(g,-307,408,206,5,'#F1DEB633',0);
-      this.rect(g,-307,408,206*Math.max(0,m.hp/m.maxHp),5,m.hp>30?C.cream:C.red,0);
+      this.rect(g,-70,530,153,5,C.track,2);this.rect(g,-70,530,153*Math.max(0,m.hp/m.maxHp),5,m.hp>30?C.cream:C.red,2);
+      this.rect(g,213,537,103,4,C.track,2);if(xp.ratio)this.rect(g,213,537,103*xp.ratio,4,C.gold,2);
+      this.rect(g,-336,443,672,30,C.panel,2);
     }
-    const elapsed=Math.floor(m.time+.00001);
-    this.labels.time.string=Math.floor(elapsed/60).toString().padStart(2,'0')+':'+(elapsed%60).toString().padStart(2,'0');
-    this.labels.time.node.setPosition(-217,457,0);this.labels.time.node.getComponent(UITransform)!.setContentSize(204,67);this.labels.time.fontSize=50;this.labels.time.font=null;this.labels.time.useSystemFont=true;this.labels.time.fontFamily='Georgia';this.labels.time.color=new Color(C.cream);
-    this.labels.tag.node.setPosition(-298,508,0);this.labels.tag.node.getComponent(UITransform)!.setContentSize(217,32);this.labels.tag.fontSize=20;
-    this.labels.tag.string=(m.worldState.id==='city'?'雨巷':m.worldState.name)+' / 第 '+String(m.wave).padStart(2,'0')+' 波';this.labels.tag.color=new Color(C.cream);
-    this.labels.hp.node.setPosition(-307,385,0);this.labels.hp.fontSize=20;this.labels.hp.string='装甲 '+Math.ceil(m.hp)+' / '+m.maxHp;
-    this.labels.shield.node.setPosition(-211,357,0);this.labels.shield.fontSize=17;this.labels.shield.color=new Color(C.teal);this.labels.shield.string='护盾 '+Math.ceil(m.shieldHp)+' / '+m.maxShield;
-    this.labels.kills.node.setPosition(260,545,0);this.labels.kills.fontSize=18;this.labels.kills.string='击破 '+m.kills;
-    const xp=m.carRewardProgress;
-    this.labels.form.node.active=fighting;this.labels.milestone.node.active=fighting;
-    this.labels.form.node.setPosition(182,502,0);this.labels.form.fontSize=17;this.labels.form.color=new Color(C.cream);this.labels.form.string='车厢经验 '+xp.current+' / '+xp.required;
-    this.labels.milestone.node.setPosition(182,457,0);this.labels.milestone.fontSize=17;this.labels.milestone.color=new Color(C.gold);this.labels.milestone.string='词条整备 '+Math.ceil(m.modifierWait)+'秒';
-    if(fighting){this.rect(g,82,483,205,4,C.cream+'33');this.rect(g,82,483,205*xp.ratio,4,C.gold);}
-    this.labels.build.node.setPosition(-292,-461,0);this.labels.build.fontSize=18;this.labels.build.color=new Color(C.gold);this.labels.build.string=m.links.length+' 条光路 / '+m.buildIdentity;
-    this.labels.build.node.getComponent(UITransform)!.setContentSize(296,31);
-    this.labels.power.node.setPosition(157,-461,0);this.labels.power.fontSize=17;this.labels.power.color=new Color(C.cream);this.labels.power.node.getComponent(UITransform)!.setContentSize(265,31);
-    this.labels.power.string=burst.active?burst.name+' · '+burst.remaining.toFixed(1)+'秒':burst.eligible?burst.name+' · '+Math.ceil(burst.cooldown)+'秒':power.summary;
-    this.labels.reorder.node.setPosition(0,-511,0);this.labels.reorder.node.getComponent(UITransform)!.setContentSize(352,66);this.labels.reorder.fontSize=33;this.labels.reorder.string='调整编组';this.labels.reorder.color=new Color(C.cream);
-    if(fighting){
-      if(!this.lastLightReorder)this.polygon(g,[-190,-542,-169,-477,190,-477,169,-542],'#AC3D2DF5');
-      const frames=m.slots.map(car=>car?this.weaponFrames.get(car.type):undefined);
-      for(let i=0;i<5;i++){
-        const x=-236+i*118,y=-433;
-        if(i<4)this.line(g,[x+24,y-12,x+94,y-12],m.links.some(l=>l.index===i)?'#F8DB88':'#8C967355',2);
-        this.circle(g,x,y-12,3,m.slots[i]?C.gold:'#819382');
-        const frame=frames[i];let n=this.lastLightFooterIcons[i];
-        if(frame&&!n){n=this.sprite('Ticket module',frame,42,52,this.node);n.setSiblingIndex(this.overlayNode.getSiblingIndex());this.lastLightFooterIcons[i]=n;}
-        if(n){n.active=!!frame;if(frame){n.getComponent(Sprite)!.spriteFrame=frame;n.getComponent(Sprite)!.customMaterial=this.unitMaterial;n.getComponent(UITransform)!.setAnchorPoint(.5,.5);n.getComponent(UITransform)!.setContentSize(47*frame.rect.width/frame.rect.height,47);n.setPosition(x,y+13,0);}}
-      }
-    }else for(const n of this.lastLightFooterIcons)if(n)n.active=false;
-    this.labels.hint.node.setPosition(-294,-564,0);this.labels.hint.fontSize=16;this.labels.hint.node.getComponent(UITransform)!.setContentSize(575,27);
-    this.labels.hint.string='击破积累经验选车厢 · 每30秒 / 击败精英选词条';
-    this.rect(g,-360,-640,720,58,'#0B2429F0');this.line(g,[-320,-583,320,-583],'#D4BB803D',1);
-    for(const [i,key]of ['footer','motion','speed','numbers','pause'].entries()){this.labels[key].node.setPosition(-288+i*144,-612,0);this.labels[key].fontSize=17;}
-    this.labels.footer.string='声音 '+(this.sound?'开':'关');this.labels.motion.string='动态 '+(this.lowMotion?'静':'开');this.labels.speed.string='倍速 ×'+this.debugSpeed;this.labels.numbers.string='跳字 '+(this.showDamage?'开':'关');this.labels.pause.string=m.phase==='paused'?'继续 ▶':'暂停 Ⅱ';
-    this.labels.toast.node.setPosition(0,-353,0);this.labels.toast.fontSize=19;this.labels.toast.string=this.toastLife>0?this.toastText:'';
-    if(fighting&&this.toastLife>0)this.rect(g,-275,-372,550,36,'#102B2DDB',1);
-    this.labels.windLesson.node.active=fighting&&this.windLessonLife>0;this.labels.windLesson.node.setPosition(0,-380,0);this.labels.windLesson.fontSize=18;this.labels.windLesson.string=this.windLessonText;
-    this.labels.chain.node.setPosition(246,412,0);this.labels.chain.fontSize=24;this.labels.chain.string=this.chain>=4?this.chain+' 连破':'';
-    this.labels.boss.node.setPosition(120,490,0);this.labels.boss.fontSize=20;this.labels.boss.node.getComponent(UITransform)!.setContentSize(360,38);this.labels.boss.string=m.boss?'执伞者 '+Math.ceil(m.boss.hp)+' / '+Math.ceil(m.boss.maxHp):'';
-    if(m.boss&&fighting){this.rect(g,12,465,298,4,'#142C2F');this.rect(g,12,465,298*Math.max(0,m.boss.hp/m.boss.maxHp),4,C.red);}
+    put('build',m.links.length+' 条联动 · '+m.buildIdentity,-125,-437,18,413,C.gold);
+    put('power',burst.active?burst.name+' '+burst.remaining.toFixed(1)+'秒':burst.eligible?burst.name+' '+Math.ceil(burst.cooldown)+'秒':'',239,-437,17,182,C.teal);
+    if(fighting)this.rect(g,-336,-454,672,33,C.panel,2);
+    put('reorder','调整编组',240,-510,27,172,C.ink,45);
+    put('dockActionHint','改装 / 换位',240,-541,17,164,C.ink);
+    this.labels.hint.node.active=false;
+    for(let i=0;i<5;i++){
+      const x=-284+i*97,car=m.slots[i],frame=car?this.weaponFrames.get(car.type):undefined;
+      put('dockSlot'+i,String(i+1),x,-480,16,78,C.muted,22);
+      put('dockLevel'+i,car?'Lv.'+(car.level+1):'空槽',x,-553,15,78,car?C.gold:C.muted,22);
+      let n=this.lastLightFooterIcons[i];
+      if(frame&&!n){n=this.sprite('Dock equipment',frame,48,58,this.node);n.setSiblingIndex(this.overlayNode.getSiblingIndex());this.lastLightFooterIcons[i]=n;}
+      if(n){n.active=fighting&&!!frame;if(frame){n.getComponent(Sprite)!.spriteFrame=frame;n.getComponent(Sprite)!.customMaterial=this.unitMaterial;n.getComponent(UITransform)!.setAnchorPoint(.5,.5);n.getComponent(UITransform)!.setContentSize(54*frame.rect.width/frame.rect.height,54);n.setPosition(x,-518,0);}}
+      if(fighting&&i<4&&m.links.some(l=>l.index===i))this.line(g,[x+37,-563,x+59,-563],C.teal,3);
+    }
+    const threats=m.enemies.filter(e=>enemyContactSeconds(e)<=2.2),left=threats.filter(e=>e.x<0).length,right=threats.length-left;
+    const notice=threats.length?`${left?'左侧 '+left+' ':''}${right?'右侧 '+right+' ':''}即将撞车`:this.toastLife>0?this.toastText:m.boss?`${ENEMY_LOOKS[3].name}在场 · 留意蓄力`:m.encounterBeat;
+    put('threat',notice,0,-392,20,610,threats.length?C.red:C.muted,33);
+    if(fighting)this.rect(g,-324,-410,648,36,threats.length?'#502C2CF5':C.panel,3);
+    this.labels.toast.node.active=false;
+    put('windLesson',this.windLessonText,0,-352,21,620,C.teal,35);this.labels.windLesson.node.active=fighting&&this.windLessonLife>0;
+    if(fighting&&this.windLessonLife>0)this.rect(g,-324,-370,648,36,C.panel,3);
+    const boss=m.boss;
+    put('chain',this.chain>=4?this.chain+' 连破':'',246,412,24,160,C.gold);this.labels.chain.node.active=fighting&&!boss;
+    put('boss',boss?ENEMY_LOOKS[3].name+' '+Math.ceil(boss.hp)+' / '+Math.ceil(boss.maxHp):'',191,418,20,232);this.labels.boss.node.active=fighting&&!!boss;
+    put('bossPhase','',191,370,18,232,C.gold);this.labels.bossPhase.node.active=fighting&&!!boss;
+    if(boss&&fighting){
+      const emerging=(boss.surfaceWait??0)>0,imminent=!emerging&&m.bossCharge>=.72;
+      this.hudPlate(70,340,242,100);
+      this.labels.bossPhase.string=emerging?'正在浮出':`${Math.max(1,Math.ceil(m.bossAttackInterval*(1-m.bossCharge)))}秒后冲击`;
+      this.labels.bossPhase.color=new Color(imminent?C.red:C.gold);
+      this.rect(g,82,394,218,6,C.track,2);this.rect(g,82,394,218*Math.max(0,boss.hp/boss.maxHp),6,C.red,2);
+      this.rect(g,82,349,218,3,C.track,1);if(!emerging)this.rect(g,82,349,218*m.bossCharge,3,imminent?C.red:C.gold,1);
+    }
+    this.rect(g,-360,-640,720,58,C.panel);
+    const settings=['声音 '+(this.sound?'开':'关'),'动态 '+(this.lowMotion?'静':'开'),'倍速 ×'+this.debugSpeed,'跳字 '+(this.showDamage?'开':'关'),m.phase==='paused'?'继续 ▶':'暂停 Ⅱ'];
+    for(const [i,key]of ['footer','motion','speed','numbers','pause'].entries()){
+      put(key,settings[i],-288+i*144,-612,18,135,C.muted,40);this.labels[key].node.active=true;
+    }
   }
   private button(text:string,x:number,y:number,w:number,h:number,action:()=>void,accent=true) {
-    const frame=this.lastLightUi[accent?3:1];
-    if(frame){const n=this.sprite(accent?'Vermilion ticket action':'Railway ticket action',frame,w,h,this.overlayNode);n.setPosition(x,y,0);n.getComponent(Sprite)!.customMaterial=this.chassisMaterial;}
-    else this.rect(this.overlay,x-w/2,y-h/2,w,h,accent?'#A83D2B':'#163639',2);
+    const C=UI_THEME;
+    if(this.instrumentFrame){
+      const plate=this.sprite('Instrument action',this.instrumentFrame,w,h,this.overlayNode);
+      plate.setPosition(x,y,0);this.instrumentPlate(plate,w,h,accent?(this.goldActionFrame||this.instrumentFrame):this.instrumentFrame);
+    }else this.rect(this.overlay,x-w/2,y-h/2,w,h,accent?C.action:C.tile,4);
     const caption=text.replace(/[→↔]/g,'').trim();
-    this.label(this.overlayNode,caption,x-(accent?8:0),y,26,C.cream,w-58,'center','display');
+    this.label(this.overlayNode,caption,x-(accent?8:0),y,26,accent&&this.goldActionFrame?C.ink:C.cream,w-58,'center','display');
     this.hitAreas.push({x,y,w,h,action});
   }
   private slotClick(index:number) {
@@ -1656,21 +1785,22 @@ export class Game extends Component {
     for(const n of this.overlayNode.children.slice())n.destroy();
     this.overlay.clear();this.hitAreas=[];
     const m=this.model,g=this.overlay;
-    if(this.lastLightPanel){this.lastLightPanel.active=m.phase!=='combat'&&(m.phase!=='menu'||this.atlas||this.garageOpen);this.lastLightPanel.getComponent(Sprite)!.customMaterial=this.chassisMaterial;}
-    if(this.menuArt)this.menuArt.active=m.phase==='menu'&&!this.atlas&&!this.garageOpen;
+    if(this.lastLightPanel){this.lastLightPanel.active=!!this.instrumentFrame&&m.phase!=='combat'&&(m.phase!=='menu'||this.atlas||this.garageOpen||this.historyOpen);if(this.instrumentFrame){this.lastLightPanel.setPosition(0,-5,0);this.instrumentPlate(this.lastLightPanel,620,840);}}
+    if(this.menuArt)this.menuArt.active=m.phase==='menu'&&!this.atlas&&!this.garageOpen&&!this.historyOpen;
     if(this.paperArt)this.paperArt.active=false;
     if(this.workshopArt)this.workshopArt.active=false;
     if(this.stationArt)this.stationArt.active=false;
     if(m.phase==='combat'){
-      this.hitAreas.push({x:0,y:-511,w:390,h:70,action:()=>this.openWorkshop()});
+      this.hitAreas.push({x:240,y:-519,w:184,h:102,action:()=>this.openWorkshop()});
+      for(let i=0;i<5;i++)this.hitAreas.push({x:-284+i*97,y:-519,w:91,h:102,action:()=>this.openWorkshop(i)});
       return;
     }
     renderPanel({model:m,knownRecipes:this.knownRecipes,newRecipes:this.newRecipes,
-      garageOpen:this.garageOpen,garage:this.garage,
+      garageOpen:this.garageOpen,historyOpen:this.historyOpen,historyIndex:this.historyIndex,saveFailed:this.garageSaveFailed,garage:this.garage,
       atlas:this.atlas,atlasPage:this.atlasPage,atlasCars:this.atlasCars,selectedSlot:this.selectedSlot,
       replacementConfirmed:this.replacementConfirmed,assembling:this.assemblyRemaining>0,
       draw:{
-        rect:(x,y,w,h,color,radius)=>{if(w>=610&&h>=700&&this.lastLightPanel)return;this.rect(g,x,y,w,h,color,radius);},
+        rect:(x,y,w,h,color,radius)=>{if(this.instrumentFrame&&((w===620&&h===840)||(w===720&&h===1280)))return;this.rect(g,x,y,w,h,color,radius);},
         label:(text,x,y,size,color,width,align,font)=>{if(text==='末日列车'&&this.lastLightUi[0]){const n=this.sprite('Calligraphic title',this.lastLightUi[0],450,183,this.overlayNode);n.setPosition(x,y,0);n.getComponent(Sprite)!.customMaterial=this.chassisMaterial;}else this.label(this.overlayNode,text,x,y,size,color,width,align,font);},
         art:(name)=>{if(name==='workshop'){if(this.workshopArt)this.workshopArt.active=true;else if(this.paperArt)this.paperArt.active=true;}else if(name==='station'){if(this.stationArt)this.stationArt.active=true;else if(this.paperArt)this.paperArt.active=true;}else if(name==='paper'){if(this.paperArt)this.paperArt.active=true;}else if(this.menuArt)this.menuArt.active=true;},
         button:(text,x,y,w,h,action,accent)=>this.button(text,x,y,w,h,action,accent),
@@ -1697,6 +1827,10 @@ export class Game extends Component {
         begin:()=>this.begin(),selectSlot:i=>this.slotClick(i),
         openGarage:()=>{this.finishRun();this.garageOpen=true;this.atlas=false;},
         closeGarage:()=>{this.garageOpen=false;},
+        openHistory:()=>{this.historyIndex=-1;this.historyOpen=true;this.garageOpen=false;this.atlas=false;},
+        closeHistory:()=>{this.historyOpen=false;},
+        selectHistory:(index)=>{this.historyIndex=index;},
+        retrySave:()=>this.saveGarage(),
         chooseEngine:id=>{this.garage=selectGarageLoadout(this.garage,{...this.garage.loadout,engine:id});this.saveGarage();},
         chooseModule:id=>{this.garage=selectGarageLoadout(this.garage,{...this.garage.loadout,module:id});this.saveGarage();},
         openWorkshop:()=>this.openWorkshop(),
@@ -1719,10 +1853,10 @@ export class Game extends Component {
           if(m.chooseOffer(i)&&m.pendingCar)this.selectedSlot=recommendSlot(m,m.pendingCar);},
         discardOffer:()=>{m.discardOffer();this.selectedSlot=-1;},
         resumeWorkshop:()=>{this.selectedSlot=-1;m.resumeWorkshop();},
-        resume:()=>m.resume(),backToMenu:()=>{this.finishRun();m.phase='menu';this.atlas=false;this.garageOpen=false;}
+        resume:()=>m.resume(),backToMenu:()=>{this.finishRun();m.phase='menu';this.atlas=false;this.garageOpen=false;this.historyOpen=false;}
       }
     });
-    if(m.phase==='menu'&&!this.atlas&&!this.garageOpen){
+    if(m.phase==='menu'&&!this.atlas&&!this.garageOpen&&!this.historyOpen){
       const frame=this.engineFrames.get(this.garage.loadout.engine);
       if(frame){const n=this.sprite('Departure sunlight engine',frame,350*frame.rect.width/frame.rect.height,350,this.overlayNode);n.setPosition(90,85,0);n.getComponent(Sprite)!.customMaterial=this.unitMaterial;}
       if(this.hullFrame){const n=this.sprite('Departure carriage',this.hullFrame,85,125,this.overlayNode);n.setPosition(90,-159,0);n.getComponent(Sprite)!.customMaterial=this.unitMaterial;}

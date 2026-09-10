@@ -29,8 +29,8 @@ export const MODS: Record<ModId, { name: string; description: string; target: Ca
   reach: { name: '延伸喷管', description: '现有喷火车及火流联动射程每级增加25%。', target: 'flame', mode: 'reach' },
   surge: { name: '快速放电', description: '现有电弧车攻击间隔每级缩短20%。', target: 'tesla', mode: 'cadence' },
   lanes: { name: '并列磁轨', description: '轨道炮每级增加一束平行光束，每束伤害和宽度降低。', target: 'rail', mode: 'lanes' },
-  scatter: { name: '霰射弹仓', description: '现有火炮每级增加一发偏转炮弹，单发伤害和弹体缩小。', target: 'cannon', mode: 'burst' },
-  burst: { name: '序列连发', description: '火炮每级追加一发延时连射，单发伤害降低；锁定本次瞄准方向。', target: 'cannon', mode: 'burst' },
+  scatter: { name: '霰射弹仓', description: '火炮普攻与联动弹每级增加一发偏转弹，单发伤害和弹体缩小。', target: 'cannon', mode: 'burst' },
+  burst: { name: '序列连发', description: '火炮普攻与联动弹每级追加一发延时连射，单发伤害降低；锁定方向与载荷。', target: 'cannon', mode: 'burst' },
   repairkit: { name: '精密修复组', description: '现有维修车升1级：每次多修复1点，回收联动增强。', target: 'repair' },
   capacitor: { name: '储能电容', description: '现有护盾车升1级：每次充盾增加4点，护盾上限增加4点。', target: 'shield' },
 };

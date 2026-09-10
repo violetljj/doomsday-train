@@ -88,3 +88,32 @@ assert.ok(labels.includes(m.getCarSynergySummary(1))&&m.getCarSynergySummary(1).
 const synergyBox=textBoxes.find(box=>box.text===m.getCarSynergySummary(1));
 assert.equal(synergyBox.y,-29,'synergy uses the existing detail row without pushing into the link list');
 console.log('Panel checks passed: separated car/mod reward sources, explicit merge vs insert, all ten car entries, recipe tab.');
+
+context.historyOpen=true;context.garage={version:1,loadout:{engine:'dawn',module:'none'},records:{runs:0,bestTime:0,bestWave:0,totalKills:0,bossKills:0,recipes:[]},recentRuns:[]};
+draw();assert.ok(labels.includes('还没有远征记录'));
+context.garage.recentRuns=Array.from({length:5},(_,i)=>({number:5-i,time:90+i,wave:5,kills:90,bosses:1,engine:'storm',outcome:'defeat',cars:[{type:'cannon',level:2},null,{type:'fan',level:1},null,null]}));
+draw();assert.equal(icons.filter(x=>x==='cannon').length,5);assert.ok(labels.includes('#5 鸣雷号 · 01:30 · 第5波'));assert.equal(labels.filter(x=>x==='失守').length,5);
+assert.ok(buttons.some(b=>b.text==='返回'));console.log('Expedition history panel: empty and five-entry views passed.');
+
+context.historyOpen=false;m.phase='paused';m.previous='combat';let retired=false;context.actions.backToMenu=()=>{retired=true;};draw();
+buttons.find(b=>b.text==='收车并记录').action();assert.ok(retired);console.log('Pause offers explicit retirement to the menu.');
+
+context.historyOpen=true;context.saveFailed=true;let retried=false;context.actions.retrySave=()=>{retried=true;};draw();
+assert.ok(labels.includes('记录暂未写入设备 · 请勿关闭页面'));buttons.find(b=>b.text==='重试保存').action();assert.ok(retried);
+context.saveFailed=false;draw();assert.ok(!buttons.some(b=>b.text==='重试保存'));console.log('History save warning and retry controls passed.');
+
+context.historyOpen=false;context.saveFailed=true;m.phase='lose';retried=false;draw();
+assert.ok(labels.includes('记录未存盘 · 点此重试，请勿关闭页面'));hits.find(h=>h.y===272).action();assert.ok(retried);
+
+context.historyOpen=true;context.saveFailed=false;context.historyIndex=-1;
+context.actions.selectHistory=index=>{context.historyIndex=index;};
+context.garage.recentRuns[0].cars[0].mods={rapid:2,scatter:1,burst:2};
+draw();hits[0].action();draw();
+assert.ok(labels.includes('第5次远征'));
+assert.ok(labels.includes('自动供弹 2级 · 霰射弹仓 1级'));
+assert.ok(labels.includes('序列连发 2级'));
+assert.ok(labels.includes('旧记录未保存词条'));
+assert.equal(labels.filter(text=>text==='空车位').length,3);
+buttons.find(b=>b.text==='返回记录列表').action();draw();
+assert.ok(labels.includes('远征记录'));assert.equal(context.historyIndex,-1);
+console.log('History details: open, modifiers, legacy gaps and return passed.');

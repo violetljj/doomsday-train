@@ -21,15 +21,32 @@ export type StationRoute = 'cargo' | 'arsenal' | 'repair';
 export interface Car { id: number; type: CarType; angle: number; previousAngle: number; flash: number; level: number; mods: Partial<Record<ModId, number>>; }
 export interface Offer { kind: 'car' | 'mod' | 'repair'; id: CarType | ModId | 'repair'; amount?: number; }
 export interface RewardState { kind: 'car' | 'mod'; source: 'xp' | 'timer' | 'elite'; title: string; }
-export interface Enemy { id: number; x: number; y: number; hp: number; maxHp: number; speed: number; kind: number; flash: number; slow?: number; freeze?: number; armorBreak?: number; burn?: number; burnDamage?: number; burnClock?: number; corrosion?: number; barrier?: number; regenClock?: number; }
+export interface Enemy { id: number; x: number; y: number; hp: number; maxHp: number; speed: number; kind: number; flash: number; surfaceWait?: number; surfaceDuration?: number; slow?: number; freeze?: number; armorBreak?: number; burn?: number; burnDamage?: number; burnClock?: number; corrosion?: number; barrier?: number; regenClock?: number; }
 export interface Effect { type: string; x: number; y: number; size: number; dx?: number; dy?: number; enemyId?: number; enemyKind?: number; recipeId?: string; carSlot?: number; source?: string; element?: DamageType; damage?: number; }
 export interface Vortex { id: number; x: number; y: number; dx: number; dy: number; life: number; maxLife: number; age: number; radius: number; tick: number; damage: number; kind: 'fire' | 'electric'; element: 'fire' | 'electric'; recipeId?: string; carSlot?: number; }
 export interface Projectile { id: number; x: number; y: number; dx: number; dy: number; life: number; radius: number; kind: string; damage: number; element: DamageType; recipeId?: string; carSlot?: number; source?: string; hitIds: number[]; burnDamage?: number; corrosion?: number; slow?: number; freeze?: number; knockback?: number; frozenBonus?: number; beam?: boolean; resolved?: boolean; }
 export interface CarAttackStats { damage:number; element:DamageType; count:number; interval:number; utility?:number; burst?:number; mode:'shot'|'cone'|'targets'|'pulse'|'push'|'repair'|'shield'; }
 export const SLOT_Y = [40, -70, -180, -290, -400];
+const TRAIN_CONTACT_RADIUS = 14;
+/** Shared approach geometry for actual movement and the threat indicator. */
+export function enemyApproach(e:Pick<Enemy,'x'|'y'>) {
+  const dx=Math.sign(e.x)*42-e.x,dy=Math.max(SLOT_Y[SLOT_Y.length-1],Math.min(120,e.y))-e.y;
+  return {dx,dy,distance:Math.hypot(dx,dy)};
+}
+/** Unopposed contact estimate; accounts for control expiry, not future attacks or knockback. */
+export function enemyContactSeconds(e:Pick<Enemy,'x'|'y'|'hp'|'kind'|'speed'|'surfaceWait'|'freeze'|'slow'>) {
+  if(e.hp<=0||e.kind===3||(e.surfaceWait??0)>0)return Infinity;
+  const distance=enemyApproach(e).distance;
+  if(distance<TRAIN_CONTACT_RADIUS)return 0;
+  if(e.speed<=0)return Infinity;
+  const freeze=Math.max(0,e.freeze??0),slowAfterFreeze=Math.max(0,(e.slow??0)-freeze);
+  const travel=Math.max(0,distance-TRAIN_CONTACT_RADIUS),slowedDistance=e.speed*.5*slowAfterFreeze;
+  return freeze+(travel<=slowedDistance?travel/(e.speed*.5):slowAfterFreeze+(travel-slowedDistance)/e.speed);
+}
+
 const REWARDS = [8, 28, 55, 95, 150, 220];
 const MODIFIER_INTERVAL = 30;
-interface BurstShot { ownerId: number; delay: number; angle: number; damage: number; radius: number; }
+interface BurstShot { ownerId: number; delay: number; angle: number; damage: number; radius: number; payload?: Projectile; originY?: number; }
 interface CarClock { cooldown: number; targetId: number | null; }
 
 /** Deterministic 30 Hz simulation. Every attack keeps its creation-time damage. */
@@ -95,6 +112,8 @@ export class Combat {
   }
   get waveRhythm(): 'ordinary' | 'surge' | 'rest' { return (['ordinary', 'surge', 'rest'] as const)[(this.wave - 1) % 3]; }
   get encounterBeat() { return this.waveRhythm === 'surge' ? '密集冲击' : this.waveRhythm === 'rest' ? '短暂喘息' : '敌群涌入'; }
+  /** Keep the first minute as the established learning window before grouping reinforcements. */
+  get spawnBatchSize() { return this.time < 60 ? 1 : this.waveRhythm === 'surge' ? 3 : this.waveRhythm === 'rest' ? 1 : 2; }
   get spawnRate() {
     const base = 1.8 + 1.2 * Math.min(1, this.time / 40) + Math.min(4, .25 * Math.max(0, (this.time - 40) / 20));
     return base * (this.waveRhythm === 'surge' ? 1.18 : this.waveRhythm === 'rest' ? .76 : 1);
@@ -406,14 +425,24 @@ export class Combat {
     if (this.phase !== 'combat') this.freezeInterpolation();
     return steps / 30;
   }
+  /** Submerged enemies reserve population slots but cannot participate in combat. */
+  private get activeEnemies() { return this.enemies.filter(e => !(e.surfaceWait! > 0)); }
   private spawn(near = false, forcedKind?: number, healthMultiplier = 1) {
     if (this.enemies.length >= (this.boss ? 100 : 99)) return;
     const roll = this.random();
     // Introduce counters on the same schedule as the accepted pacing candidate.
     const kind = forcedKind ?? (this.configuredLoadout ? selectWorldEnemy(this.time,roll) : (roll < .30 ? 0 : roll < .48 ? (this.time >= 12 ? 1 : 0) : roll < .60 ? (this.time >= 18 ? 2 : 0) : roll < .70 ? (this.time >= 30 ? 4 : 0) : roll < .80 ? (this.time >= 38 ? 5 : 0) : roll < .87 ? (this.time >= 44 && this.wave >= 2 ? 6 : 0) : roll < .94 ? (this.time >= 50 && this.wave >= 3 ? 7 : 0) : (this.time >= 56 && this.wave >= 4 ? 8 : 0)));
     const hp = (kind === 1 ? 17 : kind === 2 ? 48 : kind === 6 ? 35 : kind === 7 ? 42 : kind === 8 ? 50 : kind === 4 ? 30 : kind === 5 ? 32 : 24) * this.enemyHealthScale * healthMultiplier;
-    this.enemies.push({ id: this.nextId++, x: (this.random() > .5 ? 1 : -1) * (near ? 185 + this.random() * 75 : 370 + this.random() * 25),
-      y: -360 + this.random() * 680, hp, maxHp: hp, speed: kind === 1 ? 61 : kind === 2 ? 27 : 34, kind, flash: 0, barrier: kind === 6 ? 20 * this.enemyHealthScale : 0, regenClock: 2 });
+    const side = this.random() > .5 ? 1 : -1, spread = this.random(), y = -360 + this.random() * 680;
+    // Authored clear-water bands for lastlight-city-v1; allow for sprite width, not just its centre.
+    const outer = y > 170 ? 178 : y < -230 ? 200 : 210;
+    const x = side * (155 + spread * (outer - 155));
+    const speed = kind === 1 ? 61 : kind === 2 ? 27 : 34;
+    const oldX = side * (near ? 185 + spread * 75 : 370 + spread * 25);
+    const distance = (px: number) => enemyApproach({x:px,y}).distance;
+    const surfaceWait = Math.max(1.2, (distance(oldX) - distance(x)) / speed);
+    this.enemies.push({ id: this.nextId++, x, y, hp, maxHp: hp, speed, kind, flash: 0,
+      surfaceWait, surfaceDuration: surfaceWait, barrier: kind === 6 ? 20 * this.enemyHealthScale : 0, regenClock: 2 });
     if(!this.introducedEnemyKinds.has(kind)){
       this.introducedEnemyKinds.add(kind);
       this.effects.push({type:'enemy-introduced',x:0,y:260,size:kind,enemyKind:kind});
@@ -421,12 +450,12 @@ export class Combat {
     }
   }
   private spawnBoss() {
-    if(this.boss)return;
+    if(this.enemies.some(e=>e.kind===3&&e.hp>0))return;
     this.bossSpawned = true; this.bossClock = 0; this.bossCharge = 0; this.nextBossWave = this.wave + 3;
     const growth = Math.max(0, (this.time - 40) / 60);
     const hp = 700 * (1 + .45 * growth + .08 * growth * growth);
-    const x=this.random()<.5?-285:285,y=-180;
-    this.enemies.push({ id: this.nextId++, x, y, hp, maxHp: hp, speed: 0, kind: 3, flash: 0 });
+    const x=this.random()<.5?-135:135,y=-180;
+    this.enemies.push({ id: this.nextId++, x, y, hp, maxHp: hp, speed: 0, kind: 3, flash: 0, surfaceWait: 1.8, surfaceDuration: 1.8 });
     this.events.push({ type: 'boss_spawn', time: this.time }); this.effects.push({ type: 'boss', x, y, size: 70 });
   }
   private bossRange(index: number): number {
@@ -441,11 +470,11 @@ export class Combat {
   }
   private target(x: number, y: number, lockedId: number | null = null, bossRange = Infinity): Enemy | undefined {
     const boss=this.boss;
-    const live = this.enemies.filter(e => e.hp > 0 && e.kind!==3).sort((a,b) => Math.hypot(a.x-x,a.y-y)-Math.hypot(b.x-x,b.y-y));
+    const live = this.activeEnemies.filter(e => e.hp > 0 && e.kind!==3).sort((a,b) => Math.hypot(a.x-x,a.y-y)-Math.hypot(b.x-x,b.y-y));
     // A close collision threat takes precedence over a boss. Within a priority
     // group the prior lock still prevents target and muzzle jitter.
     const imminent = live.filter(e => Math.abs(e.x) <= 118);
-    if (!imminent.length && boss && Math.hypot(boss.x-x,boss.y-y)<=bossRange) return boss;
+    if (!imminent.length && boss && !(boss.surfaceWait! > 0) && Math.hypot(boss.x-x,boss.y-y)<=bossRange) return boss;
     const candidates = imminent.length ? imminent : live;
     const nearest = candidates[0], locked = candidates.find(e => e.id === lockedId);
     return nearest && locked && Math.hypot(locked.x-x,locked.y-y) <= Math.hypot(nearest.x-x,nearest.y-y)*1.3+20 ? locked : nearest;
@@ -470,7 +499,10 @@ export class Combat {
       this.waveIndex = this.wave; this.effects.push({type:'wave',x:0,y:260,size:this.wave,source:this.waveRhythm});
       this.events.push({type:'wave',time:this.time,value:`${this.wave}:${this.waveRhythm}`});
     }
-    this.spawnClock += dt * this.spawnRate; while (this.spawnClock >= 1) {
+    // Accumulate the original spawn budget; release small packs without adding enemies.
+    this.spawnClock += dt * this.spawnRate;
+    const releasePack = this.spawnClock >= this.spawnBatchSize;
+    while (releasePack && this.spawnClock >= 1) {
       this.spawnClock--; this.spawn();
       if (this.route === 'cargo' && ++this.routeSpawns % 4 === 0) {
         this.spawn(false, 0);
@@ -483,7 +515,12 @@ export class Combat {
       this.effects.push({ type: 'wave', x: 0, y: 260, size: this.wave, source: 'arsenal' });
     }
     for (const e of this.enemies) {
+      if (e.surfaceWait! > 0) { e.surfaceWait = Math.max(0, e.surfaceWait! - dt); continue; }
       if (e.hp <= 0) continue;
+      // Integrate movement before aging controls so expiry cannot grant a full free tick.
+      const frozenTime=Math.min(dt,Math.max(0,e.freeze||0));
+      const slowedTime=Math.max(0,Math.min(dt,e.slow||0)-frozenTime);
+      const movementTime=dt-frozenTime-slowedTime*.5;
       e.corrosion = Math.max(0,(e.corrosion||0)-dt);
       e.flash = Math.max(0,e.flash-dt); e.slow = Math.max(0,(e.slow||0)-dt); e.freeze = Math.max(0,(e.freeze||0)-dt); e.armorBreak = Math.max(0,(e.armorBreak||0)-dt);
       if ((e.burn || 0) > 0) {
@@ -492,15 +529,18 @@ export class Combat {
       }
       if(e.kind===8) { e.regenClock=(e.regenClock??2)-dt; if(e.regenClock<=0){e.regenClock+=2;if(!(e.burn!>0)&&e.hp>0){const healed=Math.min(e.maxHp-e.hp,e.maxHp*.08);e.hp+=healed;if(healed>0)this.effects.push({type:'regen',x:e.x,y:e.y,size:healed});}} }
       if (e.hp <= 0 || e.kind === 3) continue;
-      const tx = Math.sign(e.x)*42, ty = Math.max(SLOT_Y[SLOT_Y.length - 1],Math.min(120,e.y));
-      const dx = tx-e.x, dy = ty-e.y, distance = Math.hypot(dx,dy);
-      if (distance < 14) { e.hp = 0; this.damageTrain(e.kind===2?10:5,`enemy:${e.kind}`); }
-      else { const speed = (e.freeze!>0?0:e.slow!>0?.5:1)*e.speed; e.x += dx/distance*speed*dt; e.y += dy/distance*speed*dt; }
+      const {dx,dy,distance} = enemyApproach(e);
+      if (distance < TRAIN_CONTACT_RADIUS) { e.hp = 0; this.damageTrain(e.kind===2?10:5,`enemy:${e.kind}`); }
+      else { const travel = Math.min(distance,e.speed*movementTime); e.x += dx/distance*travel; e.y += dy/distance*travel; }
     }
     if (this.hp <= 0) return this.finish('lose','armor');
     this.updateEngine(dt);
     for(const shot of this.burstQueue)shot.delay-=dt;
-    for(const shot of this.burstQueue.filter(s=>s.delay<=1e-8)) { const slot=this.slots.findIndex(c=>c?.id===shot.ownerId);if(slot>=0){this.projectile(slot,'cannon',shot.damage,'physical',shot.angle);this.projectiles[this.projectiles.length-1].radius=shot.radius;this.effects.push({type:'fire',x:0,y:SLOT_Y[slot],size:18,dx:Math.cos(shot.angle),dy:Math.sin(shot.angle),carSlot:slot});}}
+    for(const shot of this.burstQueue.filter(s=>s.delay<=1e-8)) { const slot=this.slots.findIndex(c=>c?.id===shot.ownerId);if(slot>=0){
+      if(shot.payload)this.projectiles.push({...shot.payload,id:this.nextId++,y:shot.payload.y-(shot.originY??0)+SLOT_Y[slot],carSlot:slot,hitIds:[]});
+      else {this.projectile(slot,'cannon',shot.damage,'physical',shot.angle);this.projectiles[this.projectiles.length-1].radius=shot.radius;}
+      this.effects.push({type:'fire',x:0,y:SLOT_Y[slot],size:18,dx:Math.cos(shot.angle),dy:Math.sin(shot.angle),carSlot:slot,recipeId:shot.payload?.recipeId});
+    }}
     this.burstQueue=this.burstQueue.filter(s=>s.delay>1e-8);
     for (let i=0;i<SLOT_Y.length;i++) if(this.slots[i]) this.updateCar(i,dt);
     for (const [key,cooldown] of this.linkClocks) this.linkClocks.set(key,Math.max(0,cooldown-dt*this.attackPower.linkRateMultiplier));
@@ -513,7 +553,7 @@ export class Combat {
     this.moveProjectiles(dt); this.moveVortices(dt);
     this.enemies = this.enemies.filter(e=>e.hp>0);
     if(!this.boss)this.bossCharge=0;
-    if(this.boss) {
+    if(this.boss && !(this.boss.surfaceWait! > 0)) {
       const priorCharge=this.bossCharge;
       this.bossClock += dt; this.bossCharge = Math.min(1,this.bossClock/this.bossAttackInterval);
       if(priorCharge<.72&&this.bossCharge>=.72) { this.effects.push({type:'boss-charge',x:this.boss.x,y:this.boss.y,size:70,source:'boss'});this.events.push({type:'boss_charge_start',time:this.time}); }
@@ -538,14 +578,14 @@ export class Combat {
     this.engineClock+=20;this.engineActivations++;
     const id=this.configuredLoadout.engine,source=`engine:${id}`,y=145;
     if(id==='dawn'){
-      const target=this.enemies.filter(e=>e.hp>0).sort((a,b)=>Math.hypot(a.x,a.y-y)-Math.hypot(b.x,b.y-y))[0];
+      const target=this.activeEnemies.filter(e=>e.hp>0).sort((a,b)=>Math.hypot(a.x,a.y-y)-Math.hypot(b.x,b.y-y))[0];
       const aim=target?Math.atan2(target.y-y,target.x):Math.PI/2;
       for(const spread of [-.14,0,.14]){
         const angle=aim+spread;
         this.projectiles.push({id:this.nextId++,x:0,y,dx:Math.cos(angle)*390,dy:Math.sin(angle)*390,life:2,radius:8,kind:'cannon',damage:18,element:'physical',source,hitIds:[]});
       }
     }else if(id==='storm'){
-      const targets=this.enemies.filter(e=>e.hp>0&&Math.hypot(e.x,e.y-y)<=620).sort((a,b)=>Math.hypot(a.x,a.y-y)-Math.hypot(b.x,b.y-y)).slice(0,3);
+      const targets=this.activeEnemies.filter(e=>e.hp>0&&Math.hypot(e.x,e.y-y)<=620).sort((a,b)=>Math.hypot(a.x,a.y-y)-Math.hypot(b.x,b.y-y)).slice(0,3);
       for(const enemy of targets){
         this.effects.push({type:'tesla',x:0,y,dx:enemy.x,dy:enemy.y-y,size:22,source});
         this.hit(enemy,20,'electric',0,y,undefined,undefined,source);
@@ -565,6 +605,26 @@ export class Combat {
       this.projectile(index,kind,perShot,'physical',angle);const p=this.projectiles[this.projectiles.length-1];p.radius=radius;
       if(kind==='pierce'){const offset=(i-(count-1)/2)*28;p.x-=Math.sin(angle)*offset;p.y+=Math.cos(angle)*offset;}
       for(let j=1;j<=burst&&this.burstQueue.length<60;j++)this.burstQueue.push({ownerId:car.id,delay:.12*j,angle,damage:perShot,radius});
+    }
+  }
+  /** Auxiliary cars define payload; cannon mods define its delivery. */
+  private modifyLinkedCannonShots(index:number,first:number) {
+    const car=this.slots[index]!;
+    if(car.type!=='cannon')return;
+    const count=1+Math.min(2,car.mods.scatter||0),burst=Math.min(2,car.mods.burst||0);
+    if(count===1&&!burst)return;
+    const originals=this.projectiles.splice(first);
+    const multiplier=1/Math.sqrt(count)*(burst===1?.72:burst===2?.6:1);
+    for(const original of originals)for(let i=0;i<count;i++){
+      const offset=(i-(count-1)/2)*.16,c=Math.cos(offset),s=Math.sin(offset);
+      const shot:Projectile={...original,id:i===0?original.id:this.nextId++,hitIds:[],
+        dx:original.dx*c-original.dy*s,dy:original.dx*s+original.dy*c,
+        damage:original.damage*multiplier,radius:original.radius/Math.sqrt(count)};
+      if(original.burnDamage!==undefined)shot.burnDamage=original.burnDamage*multiplier;
+      this.projectiles.push(shot);
+      for(let j=1;j<=burst&&this.burstQueue.length<60;j++)this.burstQueue.push({
+        ownerId:car.id,delay:.12*j,angle:Math.atan2(shot.dy,shot.dx),damage:shot.damage,radius:shot.radius,
+        payload:{...shot,hitIds:[]},originY:SLOT_Y[index]});
     }
   }
   private updateCar(index:number,dt:number) {
@@ -590,10 +650,10 @@ export class Combat {
     else if(car.type==='flame') { clock.cooldown=.2;this.cone(index,car.angle,240*this.reach(car),.56,6*scale,'fire');this.directionEffect('flame',index,240*this.reach(car)); }
     else if(car.type==='fan') {
       clock.cooldown=.4;this.directionEffect('fan',index,250);
-      for(const e of this.enemies) if(e.hp>0&&e.kind!==3&&Math.hypot(e.x,e.y-y)<250&&Math.abs(this.arc(car.angle,Math.atan2(e.y-y,e.x)))<.95)this.push(e,0,y,26*scale);
+      for(const e of this.activeEnemies) if(e.hp>0&&e.kind!==3&&Math.hypot(e.x,e.y-y)<250&&Math.abs(this.arc(car.angle,Math.atan2(e.y-y,e.x)))<.95)this.push(e,0,y,26*scale);
     } else if(car.type==='tesla') {
       clock.cooldown=.95*Math.pow(.8,car.mods.surge||0);
-      const targets=this.enemies.filter(e=>e.hp>0&&Math.hypot(e.x,e.y-y)<550).sort((a,b)=>Math.hypot(a.x,a.y-y)-Math.hypot(b.x,b.y-y)).slice(0,3);
+      const targets=this.activeEnemies.filter(e=>e.hp>0&&Math.hypot(e.x,e.y-y)<550).sort((a,b)=>Math.hypot(a.x,a.y-y)-Math.hypot(b.x,b.y-y)).slice(0,3);
       for(const e of targets){this.effects.push({type:'tesla',x:0,y,dx:e.x,dy:e.y-y,size:16*scale,carSlot:index});this.hit(e,16*scale,'electric',0,y,undefined,index);}
     } else if(car.type==='rail') {
       clock.cooldown=1.1;this.basicShots(index,'pierce',42*scale);this.directionEffect('pierce',index,30);
@@ -601,10 +661,10 @@ export class Combat {
       clock.cooldown=1.2;this.effects.push({type:'prism',x:0,y,size:100,carSlot:index});
     } else if(car.type==='acid') {
       clock.cooldown=1.4;this.effects.push({type:'acid',x:0,y,size:260,carSlot:index});
-      for(const e of this.enemies)if(e.hp>0&&Math.hypot(e.x,e.y-y)<260){e.corrosion=3*power.supportPowerMultiplier;this.hit(e,3*scale,'acid',0,y,undefined,index);}
+      for(const e of this.activeEnemies)if(e.hp>0&&Math.hypot(e.x,e.y-y)<260){this.corrode(e,3*power.supportPowerMultiplier);this.hit(e,3*scale,'acid',0,y,undefined,index);}
     } else {
       clock.cooldown=1.6;this.effects.push({type:'cryo',x:0,y,size:245,carSlot:index});
-      for(const e of this.enemies)if(e.hp>0&&Math.hypot(e.x,e.y-y)<245){this.chill(e,1.8*power.supportPowerMultiplier);this.hit(e,4*scale,'ice',0,y,undefined,index);}
+      for(const e of this.activeEnemies)if(e.hp>0&&Math.hypot(e.x,e.y-y)<245){this.chill(e,1.8*power.supportPowerMultiplier);this.hit(e,4*scale,'ice',0,y,undefined,index);}
     }
   }
   private directionEffect(type:string,index:number,size:number,recipeId?:string) {
@@ -612,7 +672,7 @@ export class Combat {
   }
   private cone(index:number,angle:number,range:number,width:number,damage:number,element:DamageType,recipeId?:string) {
     const y=SLOT_Y[index];
-    for(const e of this.enemies)if(e.hp>0&&Math.hypot(e.x,e.y-y)<range&&Math.abs(this.arc(angle,Math.atan2(e.y-y,e.x)))<width){if(element==='fire')this.ignite(e,damage*.3);this.hit(e,damage,element,0,y,recipeId,index);}
+    for(const e of this.activeEnemies)if(e.hp>0&&Math.hypot(e.x,e.y-y)<range&&Math.abs(this.arc(angle,Math.atan2(e.y-y,e.x)))<width){if(element==='fire')this.ignite(e,damage*.3);this.hit(e,damage,element,0,y,recipeId,index);}
   }
   private projectile(index:number,kind:string,damage:number,element:DamageType,angle:number,recipeId?:string,burnDamage?:number) {
     const speed=kind==='pierce'?620:650;
@@ -681,7 +741,7 @@ export class Combat {
     } else if(id==='flame-cryo') {
       this.effects.push({type:'link-shot',x:0,y:originY,dx:target.x,dy:target.y-originY,size:8,recipeId:id,carSlot:driver});
       this.effects.push({type:'thermal',x:target.x,y:target.y,size:105,recipeId:id,carSlot:driver});
-      for(const e of this.enemies)if(e.hp>0&&Math.hypot(e.x-target.x,e.y-target.y)<=105){
+      for(const e of this.activeEnemies)if(e.hp>0&&Math.hypot(e.x-target.x,e.y-target.y)<=105){
         const cold=(e.slow||0)>0||(e.freeze||0)>0;
         if(cold)this.effects.push({type:'cold-shatter',x:e.x,y:e.y,size:42,recipeId:id,carSlot:driver,source:id});
         this.ignite(e,6*scale);this.hit(e,28*scale*(cold?2:1),'fire',0,originY,id,driver);
@@ -691,7 +751,7 @@ export class Combat {
       this.vortices.push({id:this.nextId++,x:target.x,y:target.y,dx:0,dy:0,life:1.8,maxLife:1.8,age:0,radius:92,tick:0,damage:7*scale,kind:'electric',element:'electric',recipeId:id,carSlot:driver});
       this.effects.push({type:'electric-vortex',x:target.x,y:target.y,size:92,recipeId:id,carSlot:driver});
     } else if(id==='tesla-cryo') {
-      const targets=[target,...this.enemies.filter(e=>e.hp>0&&e.id!==target.id&&Math.hypot(e.x-target.x,e.y-target.y)<=165).slice(0,3)];
+      const targets=[target,...this.activeEnemies.filter(e=>e.hp>0&&e.id!==target.id&&Math.hypot(e.x-target.x,e.y-target.y)<=165).slice(0,3)];
       for(const e of targets){const cold=(e.slow||0)>0||(e.freeze||0)>0;this.effects.push({type:'conduction',x:0,y:originY,dx:e.x,dy:e.y-originY,size:20,recipeId:id,carSlot:driver});this.hit(e,(cold?28:16)*scale,'electric',0,originY,id,driver);this.chill(e,2*power.supportPowerMultiplier,(e===target?1:0)*power.supportPowerMultiplier);}
     }
     if(id==='rail-fan'||id==='rail-cryo') {
@@ -707,18 +767,18 @@ export class Combat {
         for(const offset of[-.32,0,.32])this.cone(driver,car.angle+offset,330*this.reach(car),.20,22*scale,'fire',id);
         this.directionEffect('focused-flame',driver,330*this.reach(car),id);
       } else {
-        const targets=this.enemies.filter(e=>e.hp>0&&Math.hypot(e.x,e.y-originY)<600).sort((a,b)=>Math.hypot(a.x,a.y-originY)-Math.hypot(b.x,b.y-originY)).slice(0,6);
+        const targets=this.activeEnemies.filter(e=>e.hp>0&&Math.hypot(e.x,e.y-originY)<600).sort((a,b)=>Math.hypot(a.x,a.y-originY)-Math.hypot(b.x,b.y-originY)).slice(0,6);
         for(const e of targets){this.effects.push({type:'conduction',x:0,y:originY,dx:e.x,dy:e.y-originY,size:18,recipeId:id,carSlot:driver});this.hit(e,18*scale,'electric',0,originY,id,driver);}
       }
     } else if(this.slots[support]!.type==='acid') {
       if(car.type==='cannon'||car.type==='rail') {
         this.projectile(driver,car.type==='rail'?'pierce':'cannon',38*scale,car.type==='rail'?'acid':'physical',car.angle,id);this.projectiles[this.projectiles.length-1].corrosion=4*power.supportPowerMultiplier;this.directionEffect('acid',driver,32,id);
       } else if(car.type==='flame') {
-        for(const e of this.enemies)if(e.hp>0&&Math.hypot(e.x,e.y-originY)<300*this.reach(car)&&Math.abs(this.arc(car.angle,Math.atan2(e.y-originY,e.x)))<.55){e.corrosion=4*power.supportPowerMultiplier;this.ignite(e,8*scale);this.hit(e,24*scale,'fire',0,originY,id,driver);}
+        for(const e of this.activeEnemies)if(e.hp>0&&Math.hypot(e.x,e.y-originY)<300*this.reach(car)&&Math.abs(this.arc(car.angle,Math.atan2(e.y-originY,e.x)))<.55){this.corrode(e,4*power.supportPowerMultiplier);this.ignite(e,8*scale);this.hit(e,24*scale,'fire',0,originY,id,driver);}
         this.directionEffect('focused-flame',driver,300*this.reach(car),id);
       } else {
-        const targets=[target,...this.enemies.filter(e=>e.hp>0&&e!==target&&Math.hypot(e.x-target.x,e.y-target.y)<180).slice(0,3)];
-        for(const e of targets){const corroded=(e.corrosion||0)>0;e.corrosion=4*power.supportPowerMultiplier;this.effects.push({type:'conduction',x:0,y:originY,dx:e.x,dy:e.y-originY,size:22,recipeId:id,carSlot:driver});this.hit(e,(corroded?36:22)*scale,'electric',0,originY,id,driver);}
+        const targets=[target,...this.activeEnemies.filter(e=>e.hp>0&&e!==target&&Math.hypot(e.x-target.x,e.y-target.y)<180).slice(0,3)];
+        for(const e of targets){const corroded=(e.corrosion||0)>0;this.corrode(e,4*power.supportPowerMultiplier);this.effects.push({type:'conduction',x:0,y:originY,dx:e.x,dy:e.y-originY,size:22,recipeId:id,carSlot:driver});this.hit(e,(corroded?36:22)*scale,'electric',0,originY,id,driver);}
       }
     }
     // Payloads are captured on the new shots only, so rearranging in the workshop
@@ -732,9 +792,14 @@ export class Combat {
       }
       if(payloads.includes('acid'))shot.corrosion=Math.max(shot.corrosion||0,3*power.supportPowerMultiplier);
     }
+    this.modifyLinkedCannonShots(driver,firstProjectile);
     this.linkActivationCount++;
     if(!this.seenRecipes.has(id)){this.seenRecipes.add(id);this.effects.push({type:'discovery',x:0,y:originY,size:100,recipeId:id,carSlot:driver});this.events.push({type:'combo_discovered',time:this.time,value:id});}
     return true;
+  }
+  private corrode(e:Enemy,duration:number) {
+    if(e.hp<=0||(e.surfaceWait??0)>0)return;
+    e.corrosion=Math.max(e.corrosion||0,duration);
   }
   private ignite(e:Enemy,damage:number) {
     if(e.hp<=0)return;
@@ -752,7 +817,7 @@ export class Combat {
     return ({'status:fire':'持续灼烧','status:ice':'冰霜余震','status:electric':'电涡余震','status:acid':'蚀酸余震','boss_slam':'首领冲击','enemy:0':'敌人撞击','enemy:1':'快速敌人撞击','enemy:2':'重甲敌人撞击','enemy:4':'灼热敌人撞击','enemy:5':'带电敌人撞击','enemy:6':'护盾敌人撞击','enemy:7':'分裂敌人撞击','enemy:8':'再生敌人撞击','enemy_contact':'敌人撞击'} as Record<string,string>)[source] || source;
   }
   private hit(e:Enemy,damage:number,element:DamageType,x:number,y:number,recipeId?:string,carSlot?:number,attackSource?:string) {
-    if(e.hp<=0||damage<=0)return;
+    if(e.hp<=0||damage<=0||e.surfaceWait!>0)return;
     const resistance=(e.corrosion!>0)?1:element==='physical'&&e.kind===2&&!(e.armorBreak!>0)?.45:element==='fire'&&e.kind===4?.25:element==='electric'&&e.kind===5?.25:1;
     let amount=damage*resistance;
     const source=attackSource || recipeId || (carSlot === undefined ? `status:${element}` : `car:${this.slots[carSlot]?.type || element}`);
@@ -784,21 +849,21 @@ export class Combat {
       const tx=ox+p.dx*(p.beam?2:dt),ty=oy+p.dy*(p.beam?2:dt);
       if(p.beam){p.resolved=true;this.effects.push({type:'rail-beam',x:ox,y:oy,dx:tx-ox,dy:ty-oy,size:p.radius,carSlot:p.carSlot,recipeId:p.recipeId});}
       else {p.x=tx;p.y=ty;}
-      const touched=this.enemies.filter(e=>e.hp>0&&!p.hitIds.includes(e.id)&&this.segmentDistance(e.x,e.y,ox,oy,tx,ty)<=p.radius+(e.kind===3?48:12)).sort((a,b)=>Math.hypot(a.x-ox,a.y-oy)-Math.hypot(b.x-ox,b.y-oy));
+      const touched=this.activeEnemies.filter(e=>e.hp>0&&!p.hitIds.includes(e.id)&&this.segmentDistance(e.x,e.y,ox,oy,tx,ty)<=p.radius+(e.kind===3?48:12)).sort((a,b)=>Math.hypot(a.x-ox,a.y-oy)-Math.hypot(b.x-ox,b.y-oy));
       for(const e of touched){
         p.hitIds.push(e.id);
         if(p.kind==='burn-shell'){
           this.effects.push({type:'burn-blast',x:e.x,y:e.y,size:85,recipeId:p.recipeId,carSlot:p.carSlot});
-          for(const other of this.enemies)if(other.hp>0&&Math.hypot(other.x-e.x,other.y-e.y)<=85){this.ignite(other,p.burnDamage||4);this.hit(other,p.damage,p.element,ox,oy,p.recipeId,p.carSlot,p.source);}
+          for(const other of this.activeEnemies)if(other.hp>0&&Math.hypot(other.x-e.x,other.y-e.y)<=85){this.ignite(other,p.burnDamage||4);this.hit(other,p.damage,p.element,ox,oy,p.recipeId,p.carSlot,p.source);}
         }else if(p.kind==='cannon'){
           this.effects.push({type:'cannon-impact',x:e.x,y:e.y,size:45,recipeId:p.recipeId,carSlot:p.carSlot});
-          for(const other of this.enemies) if(other.hp>0&&Math.hypot(other.x-e.x,other.y-e.y)<=45) {
-            if(p.corrosion) other.corrosion=p.corrosion;
+          for(const other of this.activeEnemies) if(other.hp>0&&Math.hypot(other.x-e.x,other.y-e.y)<=45) {
+            if(p.corrosion)this.corrode(other,p.corrosion);
             this.hit(other,p.damage*(other.id===e.id?1:.55),p.element,ox,oy,p.recipeId,p.carSlot,p.source);
             if(p.slow||p.freeze)this.chill(other,p.slow||0,p.freeze||0);
           }
         }else{
-          const frozen=(e.freeze||0)>0;if(p.kind==='magnetic')e.armorBreak=3;if(p.corrosion)e.corrosion=p.corrosion;
+          const frozen=(e.freeze||0)>0;if(p.kind==='magnetic')e.armorBreak=3;if(p.corrosion)this.corrode(e,p.corrosion);
           this.hit(e,p.damage*(frozen?(p.frozenBonus||(p.kind==='shatter'?2:1)):1),p.element,ox,oy,p.recipeId,p.carSlot,p.source);
           if(p.kind==='shatter')this.chill(e,2,1.3);if(p.slow||p.freeze)this.chill(e,p.slow||0,p.freeze||0);if(p.knockback)this.push(e,ox,oy,p.knockback);
         }
@@ -814,14 +879,14 @@ export class Combat {
   private moveVortices(dt:number) {
     for(const v of this.vortices){v.life-=dt;v.age+=dt;v.x+=v.dx*dt;v.y+=v.dy*dt;v.tick-=dt;}
     this.vortices=this.vortices.filter(v=>v.life>0);
-    for(const e of this.enemies){
+    for(const e of this.activeEnemies){
       if(e.hp<=0||e.kind===3)continue;let nearest:Vortex|undefined,distance=Infinity;
       for(const v of this.vortices){const d=Math.hypot(v.x-e.x,v.y-e.y);if(d<v.radius+48&&d<distance){nearest=v;distance=d;}}
       if(!nearest||distance<.001)continue;const nx=(nearest.x-e.x)/distance,ny=(nearest.y-e.y)/distance,strength=1-distance/(nearest.radius+48);
       const inward=Math.min(distance*6,95+145*strength),tangent=(20+38*strength)*(nearest.id%2?-1:1);
       const vx=nx*inward-ny*tangent,vy=ny*inward+nx*tangent,cap=Math.min(1,190/Math.hypot(vx,vy));e.x+=vx*cap*dt;e.y+=vy*cap*dt;
     }
-    for(const v of this.vortices)if(v.tick<=0){v.tick+=.15;for(const e of this.enemies)if(e.hp>0&&Math.hypot(e.x-v.x,e.y-v.y)<=v.radius+(e.kind===3?48:12))this.hit(e,v.damage,v.element,v.x-v.dx*.1,v.y-v.dy*.1,v.recipeId,v.carSlot);}
+    for(const v of this.vortices)if(v.tick<=0){v.tick+=.15;for(const e of this.activeEnemies)if(e.hp>0&&Math.hypot(e.x-v.x,e.y-v.y)<=v.radius+(e.kind===3?48:12))this.hit(e,v.damage,v.element,v.x-v.dx*.1,v.y-v.dy*.1,v.recipeId,v.carSlot);}
   }
   private finish(phase:'win'|'lose',reason:string) {this.phase=phase;this.endReason=reason;this.events.push({type:'run_end',value:phase,time:this.time});}
 }

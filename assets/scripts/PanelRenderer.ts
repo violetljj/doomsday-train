@@ -1,3 +1,4 @@
+import { UI_THEME } from './UiTheme.ts';
 import { CAR_TYPES, CARS, MODS, RECIPES, ROLE_NAMES, getRecipe } from './Catalog.ts';
 import type { CarType, CarRole, ModId } from './Catalog.ts';
 import type { Combat } from './Combat.ts';
@@ -38,6 +39,10 @@ export interface PanelActions {
   resume(): void;
   backToMenu(): void;
   openGarage?(): void;
+  openHistory?(): void;
+  closeHistory?(): void;
+  selectHistory?(index:number): void;
+  retrySave?(): void;
   closeGarage?(): void;
   chooseEngine?(id: EngineId): void;
   chooseModule?(id: ModuleId): void;
@@ -54,17 +59,15 @@ export interface PanelContext {
   replacementConfirmed?: boolean;
   assembling?: boolean;
   garageOpen?: boolean;
+  historyOpen?: boolean;
+  historyIndex?: number;
+  saveFailed?: boolean;
   garage?: GarageState;
   draw: PanelPrimitives;
   actions: PanelActions;
 }
 
-const P = {
-  ink: '#102B2D', panel: '#102B2DE8', tile: '#173C3DE8', edge: '#DAB9794D',
-  cream: '#F4E4BE', muted: '#B7C5B6', gold: '#DAB979', teal: '#8FB6A7',
-  ochre: '#DAB979', red: '#DF8470', paper: '#F4E4BE',
-  signal: '#8FB6A7', warning: '#DF8470', seal: '#B53D2F',
-};
+const P = UI_THEME;
 const ROLE_COLOR: Record<CarRole, string> = { offense: P.cream, buff: P.signal, debuff: P.ochre };
 
 /** A shared quiet plate supports text without competing with painted equipment. */
@@ -85,25 +88,25 @@ function roleMark(d: PanelPrimitives, role: CarRole, x: number, y: number, r: nu
 }
 
 function surface(d: PanelPrimitives) {
-  d.art?.('paper', 0, 0, 720, 1280);
-  d.rect(-310, -425, 620, 840, '#102B2DE8', 3);
+  d.rect(-360, -640, 720, 1280, '#080E1670');
+  d.rect(-310, -425, 620, 840, P.panel, 3);
   d.rect(-310, 316, 5, 99, P.seal, 0);
-  d.line([-281,390,165,390,184,409,281,409],'#DAB97999',1.5);
-  d.line([-278,-411,205,-411,224,-393,278,-393],'#DAB9794D',1);
+  d.line([-281,390,165,390,184,409,281,409],P.edge,1.5);
+  d.line([-278,-411,205,-411,224,-393,278,-393],P.edge,1);
 }
 
 function heading(d: PanelPrimitives, title: string, subtitle: string) {
   d.label(title, -278, 348, 42, P.cream, 425, 'left', 'display');
-  d.line([-278,315,-156,315,-145,326], '#DAB979', 2);
+  d.line([-278,315,-156,315,-145,326], P.gold, 2);
   d.label('末日 / 行车票', 223, 351, 18, P.gold, 120, 'center', 'display');
   d.label(subtitle, -278, 294, 20, P.muted, 556, 'left');
 }
 
 /** Shared navigation cards keep the equipment illustration as the focal point. */
-function inset(d: PanelPrimitives, x: number, y: number, w: number, h: number, color = P.tile) {
+function inset(d: PanelPrimitives, x: number, y: number, w: number, h: number, color: string = P.tile) {
   d.rect(x,y,w,h,color,3);
-  d.line([x+9,y+h,x+w-9,y+h],'#DAB9792E',1);
-  d.line([x,y+Math.min(h,16),x,y,x+16,y],'#DAB97970',1);
+  d.line([x+9,y+h,x+w-9,y+h],P.edge,1);
+  d.line([x,y+Math.min(h,16),x,y,x+16,y],P.edge,1);
 }
 
 function badge(d: PanelPrimitives, text: string, x: number, y: number, width: number, color: string, fontSize = 20) {
@@ -133,9 +136,10 @@ function menu(c: PanelContext) {
   d.button('发车', 0, -351, 352, 104, c.actions.begin, true);
   if (c.garage && c.actions.openGarage) {
     const record = c.garage.records.runs ? `远征最佳 ${c.garage.records.bestWave} 波` : '第一程，从这里出发';
-    d.label(`${ENGINES[c.garage.loadout.engine].name} · ${record}`, 0, -414, 20, P.cream, 530);
+    d.label(c.saveFailed?'记录暂未存盘 · 请勿关闭页面':`${ENGINES[c.garage.loadout.engine].name} · ${record}`, 0, -414, 20, c.saveFailed?P.red:P.cream, 530);
     d.button('整备车头', -145, -475, 270, 62, c.actions.openGarage, false);
     d.button('车厢图鉴', 145, -475, 270, 62, () => c.actions.setAtlas(true, 0, true), false);
+    if(c.actions.openHistory)d.button('远征记录',0,-548,566,46,c.actions.openHistory,false);
   } else d.button('车厢与联动图鉴', 0, -465, 352, 64,
       () => c.actions.setAtlas(true, 0, true), false);
 }
@@ -147,10 +151,10 @@ function garage(c: PanelContext) {
   const role: Record<EngineId, string> = { dawn: '正面突破', storm: '多点清敌', haven: '装甲护航' };
   const selected = ENGINES[state.loadout.engine];
   d.art?.('workshop', 0, 0, 720, 1280);
-  heading(d, '整备车库', '选定车头与模块 · 带着自己的编组出发');
+  heading(d, '整备车库', c.saveFailed?'选择暂未存盘 · 可在远征记录中重试':'选定车头与模块 · 带着自己的编组出发');
   engineIds.forEach((id, index) => {
     const x = (index - 1) * 194, active = state.loadout.engine === id;
-    inset(d, x - 91, 80, 182, 185, active ? '#38554BD0' : '#173C3DB8');
+    inset(d, x - 91, 80, 182, 185, active ? '#345566F5' : '#22313EF5');
     if (active) {
       brush(d, x, 261, 155, 5, P.teal);
       d.line([x - 79, 90, x - 79, 108], P.teal, 2);
@@ -169,7 +173,7 @@ function garage(c: PanelContext) {
   moduleIds.forEach((id, index) => {
     const x = index % 2 ? 146 : -146, y = -81 - Math.floor(index / 2) * 61;
     const available = moduleUnlocked(state, id), active = state.loadout.module === id;
-    inset(d, x - 136, y - 25, 272, 50, active ? '#496B5DCB' : available ? '#234443BD' : '#142D2EBE');
+    inset(d, x - 136, y - 25, 272, 50, active ? '#345566F5' : available ? '#22313EF5' : '#18232EF5');
     if (active) brush(d, x - 23, y + 23, 208, 3, '#8FB6A7AA');
     else if (!available) {
       for (let stroke = 0; stroke < 3; stroke++)
@@ -317,8 +321,8 @@ function workshop(c: PanelContext) {
       : '长按车厢拖到目标槽位，松手交换';
   d.label(instruction, 0, 258, 22, c.selectedSlot >= 0 ? P.teal : P.gold, 576);
   const spacing = 610 / m.slots.length;
-  d.line([-302, 146, -6, 149, 302, 146], '#DAB9794D', 2);
-  d.line([-302, 157, 8, 155, 302, 158], '#DAB9794D', 2);
+  d.line([-302, 146, -6, 149, 302, 146], P.edge, 2);
+  d.line([-302, 157, 8, 155, 302, 158], P.edge, 2);
   m.slots.forEach((car, i) => {
     const x = (i - (m.slots.length - 1) / 2) * spacing, selected = c.selectedSlot === i;
     const width = spacing - 10, lift = selected ? 6 : 0;
@@ -367,8 +371,8 @@ function workshop(c: PanelContext) {
     const known = !!recipe && c.knownRecipes.has(recipe.id);
     brush(d, 0, y, 567, compactLinks ? 45 : 68, link ? '#274C4665' : '#173C3D55');
     const routeColor = '#102B2D';
-    brush(d, -255, y, 39, 35, link ? '#8FB6A7' : '#DAB979');
-    brush(d, -193, y, 39, 35, link ? '#8FB6A7' : '#DAB979');
+    brush(d, -255, y, 39, 35, link ? '#8FB6A7' : P.gold);
+    brush(d, -193, y, 39, 35, link ? '#8FB6A7' : P.gold);
     d.label(`${i + 1}`, -255, y, 20, routeColor, 32);
     d.label(`${i + 2}`, -193, y, 20, routeColor, 32);
     d.line([-237, y, -211, y], P.teal, 3);
@@ -412,7 +416,7 @@ function atlas(c: PanelContext) {
   else RECIPES.slice(page * 3, page * 3 + 3).forEach((recipe, i) => {
     const y = 145 - i * 153, known = c.knownRecipes.has(recipe.id);
     const support = recipe.a === recipe.executor ? recipe.b : recipe.a;
-    inset(d, -284, y - 72, 568, 148, known ? '#2B514AAC' : '#1C3838B0');
+    inset(d, -284, y - 72, 568, 148, known ? '#345566F5' : '#22313EF5');
     brush(d, -237, y + 37, 79, 63, '#8FB6A725');
     brush(d, 237, y + 37, 79, 63, '#DAB97925');
     d.cardIcon(support, -237, y + 37, 81);
@@ -443,7 +447,7 @@ function supply(c: PanelContext) {
     const heal = Math.min(m.maxHp - m.hp, offer.amount ?? m.repairAmount);
     const data = isRepair ? {name:'应急维修', description:`装甲恢复 ${heal} 点，最高恢复至 ${m.maxHp}。`} : isCar ? CARS[offer.id as CarType] : MODS[offer.id as ModId];
     const color = isRepair ? P.teal : isCar ? ROLE_COLOR[CARS[offer.id as CarType].role] : P.gold;
-    inset(d, -284, y - 80, 568, 168, carReward ? '#173C3DDC' : '#193635E8');
+    inset(d, -284, y - 80, 568, 168, carReward ? '#22313EF5' : '#22313EF5');
     if (!carReward) d.line([-284,y+88,-264,y+88,-254,y+78],P.seal,3);
     const suggested = recommendation?.index === i;
     if (suggested) {
@@ -501,14 +505,14 @@ function pause(c: PanelContext) {
   d.label(`${m.links.length} 条相邻联动 · ${m.buildPower.summary}`, -268, -3, 20, P.teal, 536, 'left');
   const next = m.buildProgression.nextMilestone;
   d.rect(-270, -115, 540, 86, '#26453F88', 2);
-  d.rect(-270, -115, 3, 86, '#DAB979', 0);
+  d.rect(-270, -115, 3, 86, P.gold, 0);
   d.label(next ? `下一步 / ${next.title}` : '编组成长已完成', -252, -52, 20, P.gold, 504, 'left');
   d.label(next ? next.threshold : '继续强化车厢，守住更远的路。', -252, -87, 20, P.cream, 504, 'left');
   d.button(awaitingSupply ? '返回补给  →' : '继续前进  →', 0, -177, 540, 74, c.actions.resume, true);
   if (awaitingSupply) d.label('领取补给后，可进入工坊调整车序', -268, -266, 21, P.muted, 536, 'left');
   else d.button(m.pendingCar ? '安排新车  →' : '调整车序  ↔', 0, -265, 540, 62, c.actions.openWorkshop, false);
   d.line([-268,-319,268,-319], '#DAB97933', 1);
-  d.label('结束本次行程', -268, -355, 19, P.muted, 252, 'left');
+  d.button('收车并记录', -120, -355, 290, 48, c.actions.backToMenu, false);
   d.button('重新发车', 175, -355, 188, 48, c.actions.begin, false);
   d.label('停靠期间 · 战斗与行程计时暂停', -268, -395, 17, P.muted, 536, 'left');
 }
@@ -518,8 +522,9 @@ function results(c: PanelContext) {
   const progression = m.buildProgression;
   brush(d, 0, 382, 65, 7, fallen ? P.warning : P.teal);
   d.label(fallen ? '列车失守' : '行程记录', 0, 332, 50, fallen ? P.red : P.cream, 570, 'center', 'display');
-  d.label(fallen ? `第 ${m.wave} 波 · 主要受损：${m.mainDamageSource || '尚无受损记录'}` : `抵达第 ${m.wave} 波`, 0, 272, 22, P.muted, 570);
-  const identityColor = m.buildIdentity === '火力编队' ? '#DAB979' : m.buildIdentity === '全域支援' ? '#8FB6A7' : m.buildIdentity === '链式共鸣' ? '#F4E4BE' : '#DAB979';
+  d.label(c.saveFailed?'记录未存盘 · 点此重试，请勿关闭页面':fallen ? `第 ${m.wave} 波 · 主要受损：${m.mainDamageSource || '尚无受损记录'}` : `抵达第 ${m.wave} 波`, 0, 272, 22, c.saveFailed?P.red:P.muted, 570);
+  if(c.saveFailed){d.line([-264,251,264,251],P.red,1);d.addHitArea(0,272,570,42,()=>c.actions.retrySave?.());}
+  const identityColor = m.buildIdentity === '火力编队' ? P.gold : m.buildIdentity === '全域支援' ? '#8FB6A7' : m.buildIdentity === '链式共鸣' ? '#F4E4BE' : P.gold;
   d.label(`${m.buildIdentity} · ${m.buildPower.summary}`, 0, 239, 21, identityColor, 570, 'center', 'display');
   const completed=progression.milestones.filter(milestone=>milestone.completed).length;
   d.label(`成长 ${completed}/${progression.milestones.length} · 联动发动 ${progression.metrics.linkActivations} 次 · 首领 ${progression.metrics.bossKills}`, 0, 207, 20, P.muted, 570);
@@ -559,14 +564,57 @@ function results(c: PanelContext) {
   d.button('返回车库', 0, -392, 566, 54, c.actions.backToMenu, false);
 }
 
+function expeditionHistory(c:PanelContext) {
+  const d=c.draw,history=c.garage!.recentRuns;
+  const selected=history[c.historyIndex??-1];
+  if(selected){
+    surface(d);heading(d,`第${selected.number}次远征`,c.saveFailed?'记录暂未写入设备 · 请勿关闭页面':`${ENGINES[selected.engine].name} · 第${selected.wave}波 · 击破 ${selected.kills}`);
+    selected.cars.forEach((car,index)=>{
+      const y=218-index*98;
+      inset(d,-280,y-76,560,90,P.tile);
+      d.label(`${index+1}`, -258,y-25,20,P.muted,32);
+      if(!car){d.label('空车位',-210,y-25,23,P.muted,440,'left');return;}
+      d.cardIcon(car.type,-197,y-27,54);
+      d.label(`${CARS[car.type].name} +${car.level}`,-154,y-5,23,P.cream,408,'left');
+      const mods=(Object.keys(car.mods??{}) as ModId[]).filter(id=>MODS[id]?.mode&&(car.mods![id]??0)>0).map(id=>`${MODS[id].name} ${car.mods![id]}级`);
+      d.label(car.mods===undefined?'旧记录未保存词条':mods.length?mods.slice(0,2).join(' · '):'未装配特殊词条',-154,y-33,20,P.muted,408,'left');
+      if(mods.length>2)d.label(mods.slice(2).join(' · '),-154,y-59,20,P.muted,408,'left');
+    });
+    if(c.saveFailed)d.button('重试保存',0,-314,566,46,()=>c.actions.retrySave?.(),true);
+    d.button('返回记录列表',0,c.saveFailed?-381:-370,566,58,()=>c.actions.selectHistory?.(-1),false);
+    return;
+  }
+  surface(d);heading(d,'远征记录',c.saveFailed?'记录暂未写入设备 · 请勿关闭页面':'最近五次 · 点击记录查看配装');
+  if(!history.length){
+    d.label('还没有远征记录',0,90,30,P.cream,550);
+    d.label('完成远征或返回菜单后，将在这里留下行车票。',0,30,21,P.muted,550);
+    d.label('旧版累计成绩仍然保留。',0,-16,20,P.muted,550);
+  }
+  history.forEach((run,index)=>{
+    const y=226-index*104;
+    inset(d,-280,y-84,560,96,P.tile);
+    d.addHitArea(0,y-36,560,96,()=>c.actions.selectHistory?.(index));
+    const time=`${Math.floor(run.time/60).toString().padStart(2,'0')}:${(run.time%60).toString().padStart(2,'0')}`;
+    d.label(`#${run.number} ${ENGINES[run.engine].name} · ${time} · 第${run.wave}波`,-266,y-5,22,P.cream,440,'left');
+    d.label(run.outcome==='defeat'?'失守':run.outcome==='completed'?'完成':'收车',238,y-5,20,P.gold,66);
+    d.label(`击破 ${run.kills} · 首领 ${run.bosses}`,-266,y-43,20,P.muted,230,'left');
+    run.cars.forEach((car,i)=>{
+      const x=15+i*53;
+      if(car){d.cardIcon(car.type,x,y-46,44);if(car.level)d.label(`+${car.level}`,x,y-73,15,P.gold,48);}
+      else d.label('—',x,y-46,18,P.muted,40);
+    });
+  });
+  if(c.saveFailed)d.button('重试保存',0,-314,566,46,()=>c.actions.retrySave?.(),true);
+  d.button('返回',0,c.saveFailed?-381:-370,566,58,()=>c.actions.closeHistory?.(),false);
+}
+
 export function renderPanel(context: PanelContext): void {
+  if(context.historyOpen&&context.garage){expeditionHistory(context);return;}
   if (context.garageOpen && context.garage) { garage(context); return; }
   const phase = context.model.phase;
   if (phase === 'combat') return;
   if (phase === 'menu' && !context.atlas) { menu(context); return; }
-  if (phase === 'workshop' && !context.atlas) context.draw.art?.('workshop',0,0,720,1280);
-  else if (phase === 'supply') context.draw.art?.('station',0,0,720,1280);
-  else surface(context.draw);
+  surface(context.draw);
   if (context.atlas && (phase === 'menu' || phase === 'workshop')) { atlas(context); return; }
   switch (phase) {
     case 'workshop': workshop(context); break;

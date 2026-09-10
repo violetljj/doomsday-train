@@ -28,6 +28,9 @@ while(run.time<60&&run.phase!=='lose'){
       if(duplicate>=0)run.mergePending(duplicate);
       else {const empty=run.slots.indexOf(null);if(empty>=0)run.install(empty);else run.discardOffer();}
     }
+    // Keep the earned fan beside the cannon regardless of reward order.
+    const fanSlot=run.slots.findIndex(car=>car?.type==='fan');
+    if(fanSlot>1)assert.equal(run.swapSlots(fanSlot,1),true);
     run.resumeWorkshop();
   } else run.advance(.1);
 }

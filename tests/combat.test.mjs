@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { enemyContactSeconds } from '../assets/scripts/EnemyPresentation.ts';
 import { Combat, SLOT_Y } from '../assets/scripts/Combat.ts';
 import { CAR_TYPES, CARS, MODS, RECIPES, ROLE_NAMES, getRecipe } from '../assets/scripts/Catalog.ts';
 
@@ -256,7 +257,7 @@ for(const [time,health] of[[40,700],[100,1071],[160,1554]]){
  growth.enemies=[];growth.time=time;growth.spawnBoss();assert.ok(Math.abs(growth.boss.maxHp-health)<1e-8);
 }
 const capped=fixture();capped.enemies=[];for(let i=0;i<120;i++)capped.spawn();assert.equal(capped.enemies.length,99);noBase(capped);capped.time=40-1/30;step(capped);assert.equal(capped.enemies.length,100);assert.equal(capped.boss.kind,3);assert.equal(capped.wave,3);
-const endless=fixture();noBase(endless);endless.time=80-1/30;step(endless);assert.equal(endless.phase,'combat');assert.equal(endless.wave,5);const firstBoss=endless.boss;endless.hit(firstBoss,1e6,'ice',0,40);step(endless);assert.equal(endless.phase,'supply');assert.equal(endless.rewardState.source,'elite');assert.ok(endless.offers.every(o=>o.kind==='mod'));endless.chooseOffer(0);assert.equal(endless.nextScrap,Infinity,'Elite reward does not consume XP');assert.equal(endless.boss,null);assert.equal(endless.events.filter(e=>e.type==='boss_killed').length,1);
+const endless=fixture();noBase(endless);endless.time=80-1/30;step(endless);assert.equal(endless.phase,'combat');assert.equal(endless.wave,5);const firstBoss=endless.boss;step(endless,55);endless.hit(firstBoss,1e6,'ice',0,40);step(endless);assert.equal(endless.phase,'supply');assert.equal(endless.rewardState.source,'elite');assert.ok(endless.offers.every(o=>o.kind==='mod'));endless.chooseOffer(0);assert.equal(endless.nextScrap,Infinity,'Elite reward does not consume XP');assert.equal(endless.boss,null);assert.equal(endless.events.filter(e=>e.type==='boss_killed').length,1);
 endless.time=140-1/30;step(endless);assert.ok(endless.boss);assert.equal(endless.events.filter(e=>e.type==='boss_spawn').length,2);assert.equal(endless.endReason,'');
 const charge=fixture();noBase(charge);charge.bossSpawned=true;charge.enemies=[enemy(900,285,200,1400,3)];charge.bossClock=charge.bossAttackInterval-1/30;step(charge);assert.equal(charge.bossAttackDamage,8);assert.equal(charge.hp,92);assert.ok(charge.effects.some(e=>e.type==='slam'));
 
@@ -276,7 +277,7 @@ const restarted=fixture(['cannon','fan']);for(const id of Object.keys(MODS))rest
 const service=fixture(['repair']);service.enemies=[];service.hp=50;step(service);assert.equal(service.hp,53);assert.equal(service.kills,0);assert.equal(service.projectiles.length,0);service.start();assert.equal(service.shieldHp,0);
 const guard=fixture(['shield']);guard.enemies=[];step(guard);assert.equal(guard.shieldHp,12);guard.damageTrain(8);assert.equal(guard.shieldHp,4);assert.equal(guard.hp,100);guard.damageTrain(10);assert.equal(guard.shieldHp,0);assert.equal(guard.hp,94);guard.chargeShield(100,0);assert.equal(guard.shieldHp,24);guard.start();assert.equal(guard.shieldHp,0);
 for(const support of ['repair','shield'])for(const reversed of [false,true]){const m=fixture(reversed?[support,'cannon']:['cannon',support]);noBase(m);m.hp=50;m.enemies=[enemy(900,200,-15)];face(m,m.enemies[0]);step(m);assert.ok(m.seenRecipes.has(`cannon-${support}`));assert.ok(support==='repair'?m.hp>50:m.shieldHp>0);assert.equal(m.projectiles[0].carSlot,reversed?1:0);}
-const bossSides=new Set();for(const seed of [137,138,139,140,141,142]){const m=new Combat();m.start(seed);m.spawnBoss();assert.equal(m.boss.y,-180);assert.equal(Math.abs(m.boss.x),285);bossSides.add(m.boss.x);}assert.equal(bossSides.size,2);
+const bossSides=new Set();for(const seed of [137,138,139,140,141,142]){const m=new Combat();m.start(seed);m.spawnBoss();assert.equal(m.boss.y,-180);assert.equal(Math.abs(m.boss.x),135);bossSides.add(m.boss.x);}assert.equal(bossSides.size,2);
 const selfRepair=fixture();noBase(selfRepair);selfRepair.enemies=[];selfRepair.hp=98;
 step(selfRepair,149);assert.equal(selfRepair.hp,98);selfRepair.pause();selfRepair.advance(.1,2);assert.equal(selfRepair.hp,98);
 selfRepair.openWorkshop();selfRepair.advance(.1,2);assert.equal(selfRepair.hp,98);selfRepair.resumeWorkshop();step(selfRepair);assert.equal(selfRepair.hp,99);
@@ -309,3 +310,78 @@ const summary={wave:result.wave,bossKills:result.events.filter(e=>e.type==='boss
 result.start(27);assert.equal(result.time,0);assert.equal(result.hp,100);assert.equal(result.scrap,0);assert.equal(result.supplyCount,0);assert.equal(result.pendingCar,null);assert.equal(result.bossSpawned,false);assert.equal(result.endReason,'');assert.equal(result.seenRecipes.size,0);assert.equal(result.slots.length,SLOT_Y.length);assert.equal(result.slots.filter(Boolean).length,1);assert.equal(result.slots[0].type,'cannon');assert.equal(result.projectiles.length,0);assert.equal(result.vortices.length,0);assert.equal(result.linkLevel,0);
 result.seedSeenRecipes(['flame-fan','bogus']);assert.deepEqual([...result.seenRecipes],['flame-fan']);result.start();assert.equal(result.seenRecipes.size,0);
 console.log(JSON.stringify({checks:'10 role-based independent cars / 24 real recipes in both orders / correct offense emitter / five functional slots and four edges / repair and shield supports with shared links / adjacency-empty-replacement / numerical mods remain available while mode mods cap / duplicate merge and repair offers / cannon blast and rail beam / battle-only discoveries / resistance and control immunity / nearest bounded suction / real scrap and continuous rewards / smooth independent muzzles / pause-restart / 1-2-4 determinism / endless wave and elite cycles / 17 real modifiers and queued bursts',recipes:recipeResults,summary},null,2));
+
+// Water emergence reserves capacity but is inert to every weapon until surfaced.
+const water=fixture(['cannon','tesla','cryo','flame','acid']);
+water.spawn(false,0);const submerged=water.enemies[0];
+const initial={x:submerged.x,y:submerged.y,hp:submerged.hp,wait:submerged.surfaceWait};
+assert.ok(Math.abs(initial.x)>=155&&Math.abs(initial.x)<=210);
+water.hit(submerged,999,'physical',0,40);assert.equal(submerged.hp,initial.hp);
+step(water,15);assert.equal(submerged.hp,initial.hp);assert.equal(submerged.x,initial.x);assert.equal(submerged.y,initial.y);
+assert.ok([...water.carClocks.values()].every(c=>c.targetId===null));
+assert.equal(water.projectiles.length,0);
+water.pause();const pausedWait=submerged.surfaceWait;water.advance(.1);assert.equal(submerged.surfaceWait,pausedWait);water.resume();
+water.slots=SLOT_Y.map(()=>null);step(water,Math.ceil(submerged.surfaceWait*30)+2);assert.ok(submerged.x!==initial.x);
+water.hit(submerged,999,'physical',0,40);assert.ok(submerged.hp<=0);
+const waterBoss=fixture();waterBoss.spawnBoss();step(waterBoss,20);assert.equal(waterBoss.bossCharge,0);assert.equal(waterBoss.target(0,40),undefined);
+step(waterBoss,36);assert.ok(waterBoss.bossCharge>0);
+// Compensate the shorter path so ordinary unopposed contact timing stays within one tick.
+const timing=fixture();timing.random=()=>.5;timing.spawn(false,0);const waterTimed=timing.enemies[0];
+const oldDistance=Math.hypot(382.5-42,0);
+assert.ok(Math.abs(waterTimed.surfaceWait+Math.hypot(Math.abs(waterTimed.x)-42,0)/waterTimed.speed-oldDistance/waterTimed.speed)<1/30);
+for(let i=0;i<100;i++){timing.enemies=[];timing.random=()=>i/100;timing.spawn();const e=timing.enemies[0];assert.ok(Math.abs(e.x)<=(e.y>170?178:e.y< -230?200:210));}
+console.log('Water emergence: immunity, targeting, pause, activation, water bands and contact timing passed.');
+
+const urgentEnemy={...enemy(1001,90,40),speed:34};
+assert.ok(enemyContactSeconds(urgentEnemy)<=2.2);
+assert.equal(enemyContactSeconds({...urgentEnemy,surfaceWait:1}),Infinity);
+assert.equal(enemyContactSeconds({...urgentEnemy,freeze:1}),1+enemyContactSeconds(urgentEnemy));
+assert.equal(enemyContactSeconds({...urgentEnemy,kind:3}),Infinity);
+assert.equal(enemyContactSeconds({...urgentEnemy,slow:1}),1.5);
+assert.equal(enemyContactSeconds({...urgentEnemy,freeze:2,slow:1}),3,'Slow expires while frozen');
+assert.equal(enemyContactSeconds({...urgentEnemy,freeze:1,slow:3}),3,'Remaining slow duration is measured after thaw');
+assert.ok(enemyContactSeconds({...urgentEnemy,y:320})>2.2,'Diagonal threats use travel distance, not horizontal proximity');
+// Pack scheduling spends the same rate budget, with a bounded remainder and real gaps.
+const packs=fixture();packs.slots=SLOT_Y.map(()=>null);packs.time=68;packs.spawnClock=0;packs.nextBossWave=Infinity;
+assert.equal(new Combat().spawnBatchSize,1,'Opening retains the established learning cadence');
+let scheduledBudget=0,spawnedCount=0,quietSteps=0,multiSteps=0;
+for(let i=0;i<300;i++){
+  packs.enemies=[];const before=packs.nextId;step(packs);
+  scheduledBudget+=packs.spawnRate/30;
+  const spawned=packs.nextId-before;spawnedCount+=spawned;
+  if(!spawned)quietSteps++;if(spawned>=2)multiSteps++;
+}
+assert.ok(Math.abs(scheduledBudget-spawnedCount-packs.spawnClock)<1e-8);
+assert.ok(packs.spawnClock<2);assert.ok(multiSteps>0&&quietSteps>200);
+console.log('Threat estimates and budget-preserving spawn packs passed.');
+
+// Compare the indicator with actual unopposed movement, including expiring controls.
+for(const control of [{},{slow:.4},{freeze:.3},{freeze:1.2,slow:.5},{freeze:.5,slow:2}]) {
+  const approach=fixture();approach.slots=SLOT_Y.map(()=>null);
+  const e={...enemy(1020,110,180),speed:61,...control};approach.enemies=[e];
+  const predicted=enemyContactSeconds(e);let elapsed=0;
+  while(approach.hp===100&&elapsed<10){step(approach);elapsed+=1/30;}
+  assert.ok(Math.abs(predicted-elapsed)<=2/30,`Contact estimate differs from movement: ${JSON.stringify(control)} predicted ${predicted} actual ${elapsed}`);
+}
+console.log('Contact timing matches movement through freeze and slow expiry.');
+
+// Adding a weaker acid source must not shorten an existing longer corrosion.
+const acidRefresh=fixture(['acid']);acidRefresh.enemies=[{...enemy(),corrosion:8}];step(acidRefresh);
+assert.ok(acidRefresh.enemies[0].corrosion>7.9,'Standalone acid preserves longer corrosion');
+for(const kind of ['cannon','pierce']){
+  const payload=fixture();payload.enemies=[{...enemy(),corrosion:8}];
+  payload.projectiles=[shell(1200,kind,{corrosion:1})];payload.moveProjectiles(1/30);
+  assert.equal(payload.enemies[0].corrosion,8,`${kind} preserves longer corrosion`);
+}
+const freshAcid=fixture();freshAcid.enemies=[enemy(900,200,40,100,2)];
+freshAcid.projectiles=[shell(1201,'cannon',{damage:20,corrosion:1})];freshAcid.moveProjectiles(1/30);
+assert.equal(freshAcid.enemies[0].hp,80,'Corrosion applies before physical resistance on a new target');
+console.log('Corrosion refresh and pre-hit application passed.');
+
+// Status expiry within a simulation tick must not grant a whole tick of movement.
+for(const [control,travel] of [[{freeze:1/30},0],[{freeze:1/60},1],[{slow:1/60},1.5],[{freeze:1/120,slow:1/40},1]]){
+  const movement=fixture([]);const target={...enemy(1600,200,40),speed:60,...control};movement.enemies=[target];
+  step(movement);
+  assert.ok(Math.abs((200-target.x)-travel)<1e-8,`Expiry movement ${JSON.stringify(control)}: ${200-target.x}, expected ${travel}`);
+}
+console.log('Fractional freeze and slow expiry movement passed.');

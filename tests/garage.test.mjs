@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {newGarage,readGarage,recordRun,selectGarageLoadout,moduleUnlocked} from '../assets/scripts/Garage.ts';
+import {newGarage,readGarage,recordRun,selectGarageLoadout,moduleUnlocked,saveGarageToStorage} from '../assets/scripts/Garage.ts';
 const fresh=newGarage();assert.equal(fresh.loadout.engine,'dawn');assert.equal(fresh.loadout.module,'none');
 assert.ok(moduleUnlocked(fresh,'plating'));assert.ok(!moduleUnlocked(fresh,'capacitor'));
 assert.equal(selectGarageLoadout(fresh,{engine:'storm',module:'capacitor'}).loadout.module,'none');
@@ -14,3 +14,36 @@ const corrupt=readGarage(JSON.stringify({version:1,loadout:{engine:'evil',module
 assert.equal(corrupt.loadout.engine,'dawn');assert.equal(corrupt.loadout.module,'none');assert.equal(corrupt.records.runs,0);assert.equal(corrupt.records.recipes.length,1);
 assert.equal(readGarage(null,['cannon-fan','rail-fan','flame-fan']).records.recipes.length,3,'Existing discovered recipes migrate');
 console.log('Garage save: records, unlocks, selection, migration, malformed data, and reload passed.');
+
+let journal=newGarage();const formation=[{type:'cannon',level:2},null,{type:'fan',level:1},null,null];
+for(let i=1;i<=7;i++)journal=recordRun(journal,{time:i*30,wave:i,kills:i*10,bosses:1,recipes:[],engine:'storm',outcome:'defeat',cars:formation});
+assert.deepEqual(journal.recentRuns.map(r=>r.number),[7,6,5,4,3]);
+assert.equal(journal.recentRuns[0].engine,'storm');assert.equal(journal.recentRuns[0].outcome,'defeat');
+assert.equal(journal.recentRuns[0].cars[1],null,'Empty slots preserve actual adjacency');
+formation[0].level=99;assert.equal(journal.recentRuns[0].cars[0].level,2,'History is detached from the live train');
+assert.deepEqual(readGarage(JSON.stringify(journal)),journal);
+const oldSave=JSON.stringify({version:1,loadout:fresh.loadout,records:journal.records});
+const migrated=readGarage(oldSave);assert.deepEqual(migrated.records,journal.records);assert.deepEqual(migrated.recentRuns,[]);
+const badHistory=readGarage(JSON.stringify({...fresh,recentRuns:[null,{number:1,time:40,cars:[{type:'unknown',level:7},{type:'fan',level:-1}],engine:'wrong',outcome:'wrong'}]}));
+assert.equal(badHistory.recentRuns.length,1);assert.equal(badHistory.recentRuns[0].cars[0],null);assert.equal(badHistory.recentRuns[0].cars[1].level,0);
+assert.equal(badHistory.recentRuns[0].engine,'dawn');assert.equal(badHistory.recentRuns[0].outcome,'retired');
+assert.equal(recordRun(fresh,{time:.5,wave:1,kills:0,bosses:0,recipes:[]}).recentRuns.length,1);
+console.log('Recent expeditions: bounded history, composition gaps, snapshot isolation, migration and reload passed.');
+
+const beforeSave=JSON.stringify(journal);let stored='';
+assert.equal(saveGarageToStorage(undefined,journal),false);
+assert.equal(saveGarageToStorage({setItem(){throw Error('QuotaExceededError');}},journal),false);
+assert.equal(JSON.stringify(journal),beforeSave,'Write failure preserves live records');
+assert.equal(saveGarageToStorage({setItem(key,value){assert.equal(key,'doomsday-garage-v1');stored=value;}},journal),true);
+assert.deepEqual(readGarage(stored),journal,'Retry persists the exact retained records');
+console.log('Save failure and retry preserve session records.');
+
+const modifiedCars=[{type:'cannon',level:3,mods:{rapid:2,scatter:1,caliber:3}},null];
+const modifiedRun=recordRun(fresh,{time:42,wave:3,kills:12,bosses:0,recipes:[],cars:modifiedCars});
+modifiedCars[0].mods.rapid=1;
+assert.deepEqual(modifiedRun.recentRuns[0].cars[0].mods,{caliber:3,rapid:2,scatter:1},'Record owns its modifier snapshot');
+assert.deepEqual(readGarage(JSON.stringify(modifiedRun)),modifiedRun,'Modifiers survive device reload');
+assert.equal(journal.recentRuns[0].cars[0].mods,undefined,'Old history does not invent missing modifiers');
+const invalidMods=readGarage(JSON.stringify({...modifiedRun,recentRuns:[{...modifiedRun.recentRuns[0],cars:[{type:'cannon',level:3,mods:{rapid:99,scatter:-1,burst:1.5,reach:2,unknown:7,caliber:999}}]}]}));
+assert.deepEqual(invalidMods.recentRuns[0].cars[0].mods,{caliber:99,rapid:2,burst:1},'Only applicable, bounded modifier levels load');
+console.log('Expedition modifiers: detached snapshot, reload, legacy data and invalid values passed.');

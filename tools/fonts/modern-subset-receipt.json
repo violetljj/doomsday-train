@@ -6,16 +6,16 @@
   "roles": {
     "title": {
       "weight": 600,
-      "bytes": 197984,
-      "glyphs": 762,
-      "sha256": "c31c4b5835fbe6dcc4182c7a0b04613d1fcb7883100c65097292b3ca81308d70",
+      "bytes": 201456,
+      "glyphs": 774,
+      "sha256": "1d924d029c4ecad9f4a82ef39f8d3412c1aaf0c7b39169d6d7eaf3d7c7631f35",
       "missing_symbols": ""
     },
     "body": {
       "weight": 450,
-      "bytes": 197988,
-      "glyphs": 762,
-      "sha256": "6129168e3efeda55761399a5bd557febbb6c4b21639eaa34dcccbdd2dceb60d6",
+      "bytes": 201448,
+      "glyphs": 774,
+      "sha256": "f28ac994db0763d3b3e86613651fb892f9e19d6dc5811aa6058bce5d8968f3c9",
       "missing_symbols": ""
     }
   }
