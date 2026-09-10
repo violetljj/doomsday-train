@@ -5,7 +5,7 @@ import { CAR_TYPES, CARS, MODS, RECIPES, ROLE_NAMES, getRecipe } from '../assets
 function enemy(id=900,x=200,y=40,hp=1000,kind=0){return {id,x,y,hp,maxHp:hp,kind,speed:0,flash:0};}
 function carOffer(m,type,index){m.phase='supply';m.offers=[{kind:'car',id:type}];assert.equal(m.chooseOffer(0),true);assert.equal(m.install(index),true);assert.equal(m.resumeWorkshop(),true);}
 function fixture(types=['cannon']){
- const m=new Combat();m.start();m.enemies=[];m.spawnClock=-10000;m.supplyCount=6;m.nextScrap=Infinity;
+ const m=new Combat();m.start();m.enemies=[];m.spawnClock=-10000;m.supplyCount=6;m.nextScrap=Infinity;m.nextModifierTime=Infinity;
  m.slots=SLOT_Y.map(()=>null);m.carClocks.clear();
  for(let i=0;i<types.length;i++)if(types[i])carOffer(m,types[i],i);
  return m;
@@ -201,29 +201,41 @@ function claimSequence(){
  for(let round=0;round<9;round++){
   const threshold=m.nextScrap;
   while(m.scrap<threshold){const e=enemy(1000+m.scrap,200,40,1);m.enemies.push(e);m.hit(e,1,'physical',0,40);}
-  if(round>0){step(m);assert.equal(m.phase,'combat','Banked scrap cannot immediately reopen supply');m.time=m.nextSupplyTime-1/30;}
+  if(round>0)m.time=m.nextSupplyTime-1/30;
   step(m);assert.equal(m.phase,'supply');assert.equal(m.supplyCount,round+1);assert.equal(m.offers.length,3);
   const carIds=m.offers.filter(o=>o.kind==='car').map(o=>o.id);
-  if(m.slots.filter(Boolean).length<5){assert.ok(carIds.some(id=>CARS[id].role==='offense'));assert.ok(carIds.some(id=>CARS[id].role!=='offense'));}
-  if(round===0)assert.ok(carIds.includes('fan')&&carIds.includes('cryo'));
-  if(round===0)assert.ok(m.offers.every(o=>o.kind==='car'));else assert.ok(m.offers.some(o=>o.kind==='mod'));
+  assert.equal(carIds.length,3);assert.equal(new Set(carIds).size,3);assert.equal(m.rewardState.source,'xp');
   cards.push(m.offers.map(o=>({...o})));const frozen=JSON.stringify(m);assert.equal(m.advance(.1,4),0);assert.equal(JSON.stringify(m),frozen);
   m.chooseOffer(0);m.discardOffer();m.resumeWorkshop();
  }
  assert.equal(m.supplyCount,9);assert.ok(Number.isFinite(m.nextScrap)&&m.nextScrap>m.scrap);return cards;
 }
 assert.deepEqual(claimSequence(),claimSequence());
-// Reward surplus survives pauses and cannot produce back-to-back selection screens.
+// Surplus XP becomes queued car rewards; menus freeze both reward clocks.
 const paced=fixture();paced.scrap=1000;paced.nextScrap=8;paced.supplyCount=0;step(paced);
-assert.equal(paced.phase,'supply');assert.equal(paced.nextScrap,28);
+assert.equal(paced.phase,'supply');assert.ok(paced.nextScrap>1000);const queued=paced.queuedRewardCount;assert.ok(queued>1);
 paced.chooseOffer(0);paced.discardOffer();const waitBefore=paced.supplyWait;
 assert.equal(paced.advance(.1,4),0);assert.equal(paced.supplyWait,waitBefore);
 paced.resumeWorkshop();paced.pause();assert.equal(paced.advance(.1,4),0);assert.equal(paced.supplyWait,waitBefore);paced.resume();
-step(paced,359);assert.equal(paced.phase,'combat');assert.equal(paced.scrap,1000);
-step(paced);assert.equal(paced.phase,'supply');assert.equal(paced.supplyCount,2);assert.equal(paced.nextScrap,55);
-assert.ok(Math.abs(paced.events.filter(e=>e.type==='supply_offer')[1].time-paced.events.filter(e=>e.type==='supply_offer')[0].time-12)<1e-8);
-paced.start();assert.equal(paced.supplyWait,0);assert.equal(paced.nextScrap,8);
+step(paced,29);assert.equal(paced.phase,'combat');step(paced);assert.equal(paced.phase,'supply');assert.equal(paced.queuedRewardCount,queued-1);
+paced.start();assert.equal(paced.supplyWait,0);assert.equal(paced.nextScrap,8);assert.equal(paced.modifierWait,30);assert.equal(paced.queuedRewardCount,0);
 
+const timed=fixture();noBase(timed);timed.nextModifierTime=30;timed.time=30-1/30;
+const timerXp=timed.nextScrap;step(timed);assert.equal(timed.rewardState.source,'timer');assert.ok(timed.offers.every(o=>o.kind==='mod'));
+assert.equal(timed.nextScrap,timerXp,'Timed mods do not consume a carriage level');assert.equal(timed.scrap,0);assert.equal(timed.stationChoices,false);
+const timerWait=timed.modifierWait;timed.advance(.1,4);assert.equal(timed.modifierWait,timerWait);timed.chooseOffer(0);timed.pause();timed.advance(.1,4);assert.equal(timed.modifierWait,timerWait);timed.resume();
+assert.equal(timed.route,null,'A modifier no longer silently assigns a dangerous route');
+const coincident=fixture();noBase(coincident);coincident.nextScrap=8;coincident.nextModifierTime=30;coincident.time=30-1/30;coincident.scrap=3;
+coincident.hit(enemy(990,200,40,1,3),10,'ice',0,40);step(coincident);
+const sources=[];
+for(let i=0;i<3;i++){
+  sources.push(coincident.rewardState.source);
+  assert.ok(coincident.offers.every(o=>o.kind===coincident.rewardState.kind));
+  coincident.chooseOffer(0);if(coincident.phase==='workshop'){coincident.discardOffer();coincident.resumeWorkshop();}
+  if(i<2)step(coincident,30);
+}
+assert.deepEqual(sources,['elite','xp','timer'],'Coincident boss, XP and timed rewards are all retained');assert.equal(coincident.queuedRewardCount,0);
+const fastCannon=fixture();fastCannon.projectile(0,'cannon',26,'physical',0);assert.equal(Math.hypot(fastCannon.projectiles[0].dx,fastCannon.projectiles[0].dy),650);
 // Spawned health is continuous at wave boundaries; living enemies keep their original maximum.
 const growth=fixture();growth.time=19.99;growth.random=()=>.1;growth.spawn();const opening=growth.enemies.at(-1);
 assert.equal(opening.maxHp,24);
@@ -244,14 +256,17 @@ for(const [time,health] of[[40,700],[100,1071],[160,1554]]){
  growth.enemies=[];growth.time=time;growth.spawnBoss();assert.ok(Math.abs(growth.boss.maxHp-health)<1e-8);
 }
 const capped=fixture();capped.enemies=[];for(let i=0;i<120;i++)capped.spawn();assert.equal(capped.enemies.length,99);noBase(capped);capped.time=40-1/30;step(capped);assert.equal(capped.enemies.length,100);assert.equal(capped.boss.kind,3);assert.equal(capped.wave,3);
-const endless=fixture();noBase(endless);endless.time=80-1/30;step(endless);assert.equal(endless.phase,'combat');assert.equal(endless.wave,5);const firstBoss=endless.boss;endless.hit(firstBoss,1e6,'ice',0,40);step(endless);assert.equal(endless.phase,'combat');assert.equal(endless.nextScrap,Infinity,'The milestone waits for an earned supply');assert.equal(endless.boss,null);assert.equal(endless.events.filter(e=>e.type==='boss_killed').length,1);
+const endless=fixture();noBase(endless);endless.time=80-1/30;step(endless);assert.equal(endless.phase,'combat');assert.equal(endless.wave,5);const firstBoss=endless.boss;endless.hit(firstBoss,1e6,'ice',0,40);step(endless);assert.equal(endless.phase,'supply');assert.equal(endless.rewardState.source,'elite');assert.ok(endless.offers.every(o=>o.kind==='mod'));endless.chooseOffer(0);assert.equal(endless.nextScrap,Infinity,'Elite reward does not consume XP');assert.equal(endless.boss,null);assert.equal(endless.events.filter(e=>e.type==='boss_killed').length,1);
 endless.time=140-1/30;step(endless);assert.ok(endless.boss);assert.equal(endless.events.filter(e=>e.type==='boss_spawn').length,2);assert.equal(endless.endReason,'');
 const charge=fixture();noBase(charge);charge.bossSpawned=true;charge.enemies=[enemy(900,285,200,1400,3)];charge.bossClock=charge.bossAttackInterval-1/30;step(charge);assert.equal(charge.bossAttackDamage,8);assert.equal(charge.hp,92);assert.ok(charge.effects.some(e=>e.type==='slam'));
 
-// Full trains favor useful duplicates but can still discover omitted cars; repairs are offered and report actual recovery at any fullness.
-let repeats=0,discoveries=0;for(let seed=1;seed<=60;seed++){const offered=fixture(['cannon','fan','flame','cryo','rail']);offered.seed=seed;offered.supplyCount=5;offered.supply();const id=offered.offers[0].id;if(offered.slots.some(car=>car?.type===id))repeats++;else discoveries++;}assert.ok(repeats>discoveries&&discoveries>0);
-const full=fixture(['cannon','fan','flame','cryo','rail']);full.supplyCount=5;full.hp=55;full.supply();assert.equal(full.offers.length,3);assert.equal(full.offers.filter(o=>o.kind==='car').length,1);assert.ok(full.offers.some(o=>o.kind==='mod'));const repair=full.offers.find(o=>o.kind==='repair');assert.equal(repair.amount,30);assert.equal(full.chooseOffer(full.offers.indexOf(repair)),true);assert.equal(full.hp,85);assert.equal(full.chooseOffer(0),false);full.pause();assert.equal(full.advance(.1,4),0);
-const fieldRepair=fixture(['cannon','fan']);fieldRepair.supplyCount=1;fieldRepair.hp=95;fieldRepair.supply();assert.equal(fieldRepair.offers.length,3);assert.ok(fieldRepair.offers.some(o=>o.kind==='car'));assert.ok(fieldRepair.offers.some(o=>o.kind==='mod'));const cappedRepair=fieldRepair.offers.find(o=>o.kind==='repair');assert.equal(cappedRepair.amount,5);assert.equal(fieldRepair.chooseOffer(fieldRepair.offers.indexOf(cappedRepair)),true);assert.equal(fieldRepair.hp,100);assert.equal(fieldRepair.effects.at(-1).size,5);
+// Fair car offers do not favor equipped weapons; explicit legacy repair remains correct.
+const counts=Object.fromEntries(CAR_TYPES.map(type=>[type,0]));
+const full=fixture(['cannon','fan','flame','cryo','rail']);full.hp=55;
+for(let round=0;round<100;round++){full.supply();assert.ok(full.offers.every(o=>o.kind==='car'));assert.equal(new Set(full.offers.map(o=>o.id)).size,3);for(const offer of full.offers)counts[offer.id]++;}
+assert.ok(Math.max(...Object.values(counts))-Math.min(...Object.values(counts))<=1,JSON.stringify(counts));
+full.offers=[{kind:'repair',id:'repair',amount:30}];assert.equal(full.chooseOffer(0),true);assert.equal(full.hp,85);assert.equal(full.chooseOffer(0),false);
+const fieldRepair=fixture(['cannon','fan']);fieldRepair.hp=95;fieldRepair.phase='supply';fieldRepair.offers=[{kind:'repair',id:'repair',amount:30}];assert.equal(fieldRepair.chooseOffer(0),true);assert.equal(fieldRepair.hp,100);assert.equal(fieldRepair.effects.at(-1).size,5);
 const merged=fixture(['cannon','fan']);merged.openWorkshop();const mergeCar=merged.slots[0], mergeClock=merged.carClocks.get(mergeCar.id);mergeCar.level=4;mergeCar.mods.burst=2;merged.pendingCar='cannon';assert.equal(merged.mergePending(1),false);assert.equal(merged.mergePending(0),true);assert.equal(merged.slots[0],mergeCar);assert.equal(merged.slots[0].id,mergeCar.id);assert.equal(merged.slots[0].level,5);assert.equal(merged.slots[0].mods.burst,2);assert.equal(merged.carClocks.get(mergeCar.id),mergeClock);assert.equal(merged.mergePending(0),false);
 const explosive=fixture();noBase(explosive);explosive.enemies=[enemy(900,200,40),enemy(901,235,40),enemy(902,260,40)];explosive.projectiles=[shell(1,'cannon',{radius:8})];explosive.moveProjectiles(1/30);assert.equal(explosive.enemies[0].hp,970);assert.equal(explosive.enemies[1].hp,983.5);assert.equal(explosive.enemies[2].hp,1000);assert.ok(explosive.effects.some(e=>e.type==='cannon-impact'&&e.size===45));
 const piercing=fixture(['rail']);noBase(piercing);piercing.enemies=[enemy(900,200,40),enemy(901,235,40)];piercing.projectiles=[shell(1,'pierce',{dx:620,radius:12,damage:30})];for(let i=0;i<3;i++)piercing.moveProjectiles(1/30);assert.ok(piercing.enemies.every(e=>e.hp===970));assert.ok(!piercing.effects.some(e=>e.type==='cannon-impact'));
@@ -287,7 +302,7 @@ function run(speed=1){
  }
  assert.ok(Math.abs(total-m.time)<1e-9);m.testRewardTimes=rewardTimes;m.testPeakEnemies=peakEnemies;return m;
 }
-const result=run();assert.ok(result.time>=60,'A natural supported route reaches at least three waves');assert.ok(result.phase==='combat'||(result.phase==='lose'&&result.endReason==='armor'));assert.equal(result.slots.length,5);
+const result=run();assert.ok(result.time>=60,'A natural supported route reaches at least three waves');assert.ok(result.phase==='combat'||(result.phase==='supply'&&result.rewardState.source==='timer')||(result.phase==='lose'&&result.endReason==='armor'));assert.equal(result.slots.length,5);
 const state=m=>({phase:m.phase,time:m.time,hp:m.hp,kills:m.kills,scrap:m.scrap,seed:m.seed,slots:m.slots,linkLevel:m.linkLevel,projectiles:m.projectiles,vortices:m.vortices,enemies:m.enemies,events:m.events,burstQueue:m.burstQueue,wave:m.wave,supplyCount:m.supplyCount,seen:[...m.seenRecipes],rewardTimes:m.testRewardTimes});
 for(const speed of[2,4])assert.deepEqual(state(run(speed)),state(result),`${speed}x preserves all fixed-step combat and random reward outcomes`);
 const summary={wave:result.wave,bossKills:result.events.filter(e=>e.type==='boss_killed').length,choices:result.events.filter(e=>e.type==='offer_chosen').map(e=>({time:+e.time.toFixed(2),choice:e.value})),result:result.phase,reason:result.endReason,bossHp:result.boss?.hp,time:+result.time.toFixed(2),hp:result.hp,peakEnemies:result.testPeakEnemies,kills:result.kills,scrap:result.scrap,cars:result.slots.map(c=>c?({type:c.type,level:c.level,mods:c.mods}):null),linkLevel:result.linkLevel,links:result.links.map(l=>l.recipe.id),rewardTimes:result.testRewardTimes};

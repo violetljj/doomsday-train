@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { DamageNumbers } from '../assets/scripts/DamageNumbers.ts';
+import { DamageNumbers, classifyDamageNumber, damageNumberPresentation } from '../assets/scripts/DamageNumbers.ts';
 const numbers=new DamageNumbers();
 numbers.add('enemy:1',10,20,6,'#FFF');numbers.advance(.05);numbers.add('enemy:1',10,20,3,'#FFF');
 assert.equal(numbers.items.length,1);assert.equal(numbers.items[0].amount,9);
@@ -11,3 +11,59 @@ numbers.advance(1);assert.equal(numbers.items.length,0);
 for(let i=0;i<80;i++)numbers.add(String(i),0,0,1,'#FFF');assert.equal(numbers.items.length,36);
 numbers.clear();numbers.add('zero',0,0,0,'#FFF');numbers.add('nan',0,0,NaN,'#FFF');assert.equal(numbers.items.length,0);
 console.log('Damage numerals: target isolation, bounded aggregation, separate armor/shield, expiry and capacity passed.');
+
+assert.equal(classifyDamageNumber(39.9),'normal');
+assert.equal(classifyDamageNumber(40),'heavy');
+assert.equal(classifyDamageNumber(80,'status:fire'),'tick','Actual status source takes precedence over size');
+assert.equal(classifyDamageNumber(80,'car:flame'),'tick','A continuous flame stream stays a tick even after upgrades');
+assert.equal(classifyDamageNumber(80,'',true),'incoming');
+assert.equal(classifyDamageNumber(80,'',true,true),'shield');
+numbers.clear();
+numbers.add('same',0,0,20,'#FFF');
+numbers.add('same',0,0,5,'#FFF',false,false,'tick');
+numbers.add('same',0,0,7,'#FFF',true);
+numbers.add('same',0,0,9,'#FFF',true,true);
+assert.equal(numbers.items.length,4,'Incoming, shield, tick, and direct hits stay independent');
+numbers.add('same',0,0,25,'#FFF');
+assert.equal(numbers.items[0].amount,45,'Aggregation sums actual damage without multipliers');
+assert.equal(numbers.items[0].kind,'heavy');
+
+numbers.clear();
+numbers.add('fire:enemy1',0,0,.3,'#FFF',false,false,'tick');
+numbers.advance(.18);
+const age=numbers.items[0].age,life=numbers.items[0].life;
+numbers.add('fire:enemy1',0,0,.2,'#FFF',false,false,'tick');
+assert.equal(numbers.items.length,1,'Dense ticks share a fixed 240ms batch');
+assert.equal(numbers.items[0].amount,.5);
+assert.equal(numbers.items[0].age,age,'Batching cannot restart the pop');
+assert.equal(numbers.items[0].life,life,'Batching cannot extend lifetime');
+numbers.advance(.08);
+numbers.add('fire:enemy1',0,0,.4,'#FFF',false,false,'tick');
+assert.equal(numbers.items.length,2,'Ticks open a new batch beyond 240ms');
+numbers.advance(.47);
+assert.equal(numbers.items.length,1,'First fixed tick batch expires independently');
+assert.equal(numbers.items[0].amount,.4);
+numbers.advance(.3);
+assert.equal(numbers.items.length,0);
+
+for(const kind of ['normal','heavy','tick','shield','incoming']){
+  numbers.clear();numbers.add(kind,0,0,kind==='heavy'?60:5,'#FFF',kind==='incoming',kind==='shield',kind);
+  const item=numbers.items[0];
+  const start=damageNumberPresentation(item);
+  numbers.advance(.08);const pop=damageNumberPresentation(item);
+  numbers.advance(item.duration*.7-.08);const fade=damageNumberPresentation(item);
+  assert.ok(start.rise===0);assert.equal(start.alpha,1);
+  assert.ok(pop.scale>start.scale);
+  assert.ok(kind==='incoming'?fade.rise<pop.rise:fade.rise>pop.rise,'Armor loss drops while outgoing values rise');
+  assert.ok(fade.alpha>0&&fade.alpha<1);assert.equal(fade.atlasRow,['normal','heavy','tick','shield','incoming'].indexOf(kind));
+  assert.equal(fade.tilt,0);
+  item.age=item.duration;assert.equal(damageNumberPresentation(item).alpha,0);
+}
+numbers.clear();numbers.add('heavy',0,0,60,'#FFF');numbers.add('tick',0,0,2,'#FFF',false,false,'tick');
+for(let i=0;i<35;i++)numbers.add(`hit${i}`,0,0,3,'#FFF');
+assert.equal(numbers.items.length,36);assert.ok(numbers.items.some(i=>i.key==='heavy'));
+assert.ok(!numbers.items.some(i=>i.key==='tick'),'Capacity pressure retires low-priority ticks first');
+const snapshot=JSON.stringify(numbers.items);
+numbers.advance(-1);numbers.advance(NaN);numbers.advance(Infinity);
+assert.equal(JSON.stringify(numbers.items),snapshot,'Invalid clock deltas never corrupt animation state');
+console.log('Damage styles: classification, exact channel totals, fixed tick batching, pop/rise/fade, and priority capacity passed.');

@@ -1,0 +1,161 @@
+{
+  "tool": "built-in image_gen.imagegen",
+  "reference": "C:/Users/26442/AppData/Local/Temp/codex-clipboard-8bde9926-e21c-4faa-9925-983b60195f6f.png",
+  "generationPrompt": "Use case: stylized-concept. Asset type: production 2D game sprite atlas.\nReference image is STYLE AND MATERIAL REFERENCE ONLY. Reproduce its beautiful narrow north-facing last-light solar train, its angular ivory porcelain panels, worn cinnabar lacquer carriage trim, deep petrol-black iron hardware, antique gold brass lines, delicate sunlit gold chamber and painterly woodblock cutout edge finish. NOT purple fantasy. NOT shiny plastic. NOT photorealistic.\nMake a new exactly 2048x2048 transparent PNG atlas containing SIXTEEN completely isolated sprites in an evenly spaced FOUR COLUMN by FOUR ROW grid. Every cell 512x512. Each sprite centered within its cell. Generous transparent margin all sides. No glyphs or labels or grid lines. Camera STRICTLY TOP DOWN, looking straight down at roofs; north/up is forward for every locomotive and weapon. Match reference silhouette but use orthographic overhead sprite camera for seamless gameplay.\nROW ONE left to right:\n1 DAWN LOCOMOTIVE: north-facing elongated elegant tapered nose, ivory shell and cinnabar striping, large circular warm sun chamber surrounded by brass spokes near its front, tiny red fabric fins, petrol running gear; about 220 wide x 400 tall.\n2 STORM LOCOMOTIVE: same family and proportions, ivory tapered nose and cinnabar lacquer, prominent concentric brass induction halo around warm white core, tiny red fabric fins; about 220 wide x400 tall.\n3 HAVEN LOCOMOTIVE: same family, north-pointed armored ivory roof and warm hanging-lantern-inspired golden chamber in its center, cinnabar frame; about220 wide x400 tall.\n4 EMPTY BASE CARRIAGE: compact 230 wide x300 tall north aligned rectangular roof/chassis, softly clipped corners, ivory porcelain flat empty roof surrounded by cinnabar lacquer trim and fine brass rivets, dark petrol iron edges, tiny couplers at top and bottom. NO WEAPON on this base.\nROWS TWO THROUGH FOUR ARE WEAPON MODULES ONLY, absolutely no carriage or rectangular base beneath them. These will be composited onto the empty carriage in-game. Each compact silhouette about 210-280 pixels wide/tall, fine outlined pale ivory/warm brass/cinnabar materials; center every item; barrels aim NORTH/UP.\nROW TWO left to right:\n1 CANNON: compact round ivory sun turret with long north-facing brass cannon barrel, warm chamber inside.\n2 FAN: elegantly open ivory paper folding fan, antique brass spokes, tiny cinnabar pivot, top-down and broad towards north, like reference folding fan.\n3 FLAME: elongated warm brass lantern flame projector, tubular ivory shell, long northward nozzle, no emitted flames.\n4 TESLA: open concentric brass induction halo around a short petrol-and-ivory central mast, warm bright center.\nROW THREE left to right:\n1 CRYO: faceted ivory and pale sun-glass crystal in a slim brass cage, sharp long diamond silhouette, NOT blue ice.\n2 ARMOR: compact overlapping ivory shield panels, small cinnabar strips, gold rivets, north-pointed kite shield.\n3 REPAIR: long faceted brass lantern capsule, glowing warm ivory glass panes, little cinnabar frame foot.\n4 RAIL: long slender angular ivory solar cannon, brass central rail and thin cinnabar accents, aimed north.\nROW FOUR left to right:\n1 PRISM: tall split diamond brass lens frame with pale honey glass, like reference diamond lantern.\n2 ACID: small antique petrol-black ink-filter flask surrounded by ivory ceramic protective arms, warm amber liquid window, tiny brass pipe.\n3 SIGNAL: small delicate brass railway signal light, ivory body, cinnabar housing.\n4 EMBLEM: simple brass sunburst emblem with warm ivory round center, isolated radial spokes.\nBackground MUST be actual alpha transparency. NO checkerboard texture or solid background. No text, no watermarks, no UI, no ground, no track, no smoke, no scenery, no panels, no drop shadows beyond small contact dark edging on the sprite itself. SIXTEEN distinct sprites only in 4x4 exact grid. Consistent hand-painted warm print illustration, restrained detail legible at 70-120px in game.",
+  "backgroundEditPrompt": "Use case: background-extraction. Edit this exact game sprite atlas. Preserve all SIXTEEN foreground sprites, every fine brass outline, ivory porcelain panel, cinnabar paint, interior sun glow, camera, size, positions, 4x4 layout and all artwork EXACTLY unchanged. Replace ONLY the entire gray checkerboard background with one perfectly flat uniform solid pure MAGENTA color RGB(255,0,255), hex #FF00FF. This includes checkerboard visible through open brass rings, gaps, and between spokes: make ALL background gaps uniformly pure magenta. Do NOT paint a checkerboard, do NOT add transparency simulation, do NOT add shadows, do NOT tint the actual foreground art magenta. Output the same square atlas, just all checkerboard changed to flat solid pure magenta, pixel-crisp sprite edges.",
+  "original": "C:/Users/26442/.codex/generated_images/01a089f9-76d7-7321-81c8-2c94a4929ae1/exec-45379af2-41c9-4944-b157-31790a9d9e68.png",
+  "final": "C:/Users/26442/.codex/generated_images/01a089f9-76d7-7321-81c8-2c94a4929ae1/exec-fc90a8e4-f434-4baa-86c0-baec7681fbf6.png",
+  "asset": "assets/resources/art/lastlight-train-v1.png",
+  "dimensions": [
+    1254,
+    1254
+  ],
+  "transparency": "RGB solid magenta background requires runtime chroma-key shader. Imagegen originally returned baked checkerboard; background-only edit replaced it with magenta. No pixel manipulation after imagegen.",
+  "keyMaskReadOnlyValidation": "r>180 && g<90 && b>160 accounts for 78.94 percent of pixels; corner RGB236,11,238. Use magenta dominance not exact RGB equality.",
+  "sprites": [
+    {
+      "name": "dawn",
+      "rect": [
+        71,
+        15,
+        171,
+        298
+      ]
+    },
+    {
+      "name": "storm",
+      "rect": [
+        385,
+        15,
+        171,
+        298
+      ]
+    },
+    {
+      "name": "haven",
+      "rect": [
+        698,
+        15,
+        171,
+        298
+      ]
+    },
+    {
+      "name": "base",
+      "rect": [
+        1029,
+        43,
+        136,
+        256
+      ]
+    },
+    {
+      "name": "cannon",
+      "rect": [
+        80,
+        337,
+        154,
+        281
+      ]
+    },
+    {
+      "name": "fan",
+      "rect": [
+        333,
+        396,
+        275,
+        212
+      ]
+    },
+    {
+      "name": "flame",
+      "rect": [
+        719,
+        338,
+        129,
+        283
+      ]
+    },
+    {
+      "name": "tesla",
+      "rect": [
+        999,
+        380,
+        196,
+        228
+      ]
+    },
+    {
+      "name": "cryo",
+      "rect": [
+        88,
+        647,
+        138,
+        260
+      ]
+    },
+    {
+      "name": "armor",
+      "rect": [
+        396,
+        666,
+        149,
+        238
+      ]
+    },
+    {
+      "name": "repair",
+      "rect": [
+        729,
+        644,
+        110,
+        268
+      ]
+    },
+    {
+      "name": "rail",
+      "rect": [
+        1050,
+        622,
+        94,
+        311
+      ]
+    },
+    {
+      "name": "prism",
+      "rect": [
+        87,
+        943,
+        139,
+        283
+      ]
+    },
+    {
+      "name": "acid",
+      "rect": [
+        380,
+        976,
+        181,
+        213
+      ]
+    },
+    {
+      "name": "signal",
+      "rect": [
+        738,
+        973,
+        91,
+        241
+      ]
+    },
+    {
+      "name": "emblem",
+      "rect": [
+        1003,
+        989,
+        189,
+        199
+      ]
+    }
+  ]
+}

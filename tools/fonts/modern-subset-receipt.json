@@ -1,0 +1,22 @@
+{
+  "upstream": "Noto Sans SC",
+  "url": "https://raw.githubusercontent.com/google/fonts/406197b91ff39a93061c2c2eeaee67ddf2ae1f0d/ofl/notosanssc/NotoSansSC%5Bwght%5D.ttf",
+  "source_sha256": "a3041811a78c361b1de50f953c805e0244951c21c5bd412f7232ef0d899af0da",
+  "license": "tools/fonts/NotoSansSC-OFL.txt",
+  "roles": {
+    "title": {
+      "weight": 600,
+      "bytes": 197984,
+      "glyphs": 762,
+      "sha256": "c31c4b5835fbe6dcc4182c7a0b04613d1fcb7883100c65097292b3ca81308d70",
+      "missing_symbols": ""
+    },
+    "body": {
+      "weight": 450,
+      "bytes": 197988,
+      "glyphs": 762,
+      "sha256": "6129168e3efeda55761399a5bd557febbb6c4b21639eaa34dcccbdd2dceb60d6",
+      "missing_symbols": ""
+    }
+  }
+}

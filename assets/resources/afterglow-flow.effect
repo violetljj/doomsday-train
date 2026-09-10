@@ -1,4 +1,4 @@
-// Sprite-compatible flow for the unrotated 4 x 2, 1774 x 887 black FX atlas.
+// Sprite-compatible flow for the unrotated 4 x 2, 1536 x 1024 black FX atlas.
 // Row-major cells: wind 1, flame 3, vortex 6. Do not dynamically repack this atlas.
 CCEffect %{
   techniques:
@@ -83,11 +83,11 @@ CCProgram sprite-fs %{
   vec4 frag () {
     vec4 o = vec4(0.0);
     #if USE_TEXTURE
-      const vec2 atlasSize = vec2(1774.0, 887.0);
+      const vec2 atlasSize = vec2(1536.0, 1024.0);
       const vec2 nominalSize = atlasSize / vec2(4.0, 2.0);
       vec2 pixel = clamp(uv0, vec2(0.0), vec2(1.0)) * atlasSize;
 
-      // Match atlasCell's rounded Rect boundaries (444/443 pixel cells).
+      // Match atlasCell's exact 384 x 512 pixel Rect boundaries.
       vec2 edge1 = floor(nominalSize + 0.5);
       float column = step(edge1.x, pixel.x)
         + step(floor(nominalSize.x * 2.0 + 0.5), pixel.x)

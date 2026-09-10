@@ -5,14 +5,15 @@ import { resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 
-export function simulate(seed, seconds = 180, policy = 'balanced') {
+export function simulate(seed, seconds = 180, policy = 'balanced', loadout) {
   if (!Number.isInteger(seed) || seed < 1 || seed > 0xffffffff) throw Error('seed must be 1..4294967295');
   if (!Number.isFinite(seconds) || seconds <= 0 || !['balanced', 'random'].includes(policy)) throw Error('Invalid simulation options');
-  const m = new Combat(); m.start(seed);
+  const m = new Combat(); m.start(seed, false, loadout);
   let rng = (seed ^ 0x9e3779b9) >>> 0;
   const random = () => { rng = (Math.imul(rng, 1664525) + 1013904223) >>> 0; return rng / 4294967296; };
   const requireAction = ok => { if (!ok) throw Error(`Rejected action: seed=${seed}, phase=${m.phase}`); };
   const choices = [];
+  const buildTime = {};
   const frames = Math.ceil(seconds * 30);
   for (let frame = 0; frame < frames && m.phase !== 'lose' && m.phase !== 'win'; frame++) {
     if (m.phase === 'supply') {
@@ -37,13 +38,15 @@ export function simulate(seed, seconds = 180, policy = 'balanced') {
     }
     if (m.phase !== 'combat') throw Error(`Stalled run ${seed}: ${m.phase}`);
     m.advance(1 / 30); m.effects.length = 0;
+    buildTime[m.buildIdentity] = (buildTime[m.buildIdentity] || 0) + 1 / 30;
     if (![m.hp, m.time, m.kills, m.scrap].every(Number.isFinite)) throw Error(`Non-finite state: ${seed}`);
   }
   return { seed, policy, outcome: m.phase === 'lose' ? 'lose' : m.phase === 'win' ? 'win' : 'horizon',
     reason: m.endReason || 'time_limit', seconds: +m.time.toFixed(6), wave: m.wave, hp: m.hp,
     kills: m.kills, scrap: m.scrap, supplies: m.supplyCount,
     bossesKilled: m.events.filter(e => e.type === 'boss_killed').length,
-    recipes: [...m.seenRecipes], slots: m.slots.map(c => c && ({ type: c.type, level: c.level, mods: c.mods })), choices };
+    recipes: [...m.seenRecipes], slots: m.slots.map(c => c && ({ type: c.type, level: c.level, mods: c.mods })), choices,
+    buildTime, buildProgression: m.buildProgression, overdrives: m.events.filter(e=>e.type==='build_overdrive'),loadout:m.runLoadout,engine:m.engineState };
 }
 
 export function summarize(rows, seconds) {
@@ -72,7 +75,7 @@ function main() {
     rows.push(simulate(options.seed + i, options.seconds, options.policy));
     if ((i + 1) % 100 === 0) console.error(`${i + 1}/${options.runs} (${((performance.now() - start) / 1000).toFixed(1)}s)`);
   }
-  const hashes = Object.fromEntries(['../assets/scripts/Combat.ts', '../assets/scripts/Catalog.ts', './simulate.mjs'].map(p => [p, createHash('sha256').update(readFileSync(new URL(p, import.meta.url))).digest('hex')]));
+  const hashes = Object.fromEntries(['../assets/scripts/Combat.ts', '../assets/scripts/Catalog.ts', '../assets/scripts/BuildProgression.ts', '../assets/scripts/Locomotives.ts', '../assets/scripts/Worlds.ts', './simulate.mjs'].map(p => [p, createHash('sha256').update(readFileSync(new URL(p, import.meta.url))).digest('hex')]));
   const report = { options, node: process.version, hashes, elapsedSeconds: (performance.now() - start) / 1000, ...summarize(rows, options.seconds) };
   mkdirSync(options.out, { recursive: true });
   writeFileSync(join(options.out, 'summary.json'), JSON.stringify(report, null, 2));

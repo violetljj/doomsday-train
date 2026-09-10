@@ -1,13 +1,19 @@
 import { _decorator, Component, Node, Graphics, Color, UITransform, Label, Vec3, EventTouch,
-  resources, SpriteFrame, Sprite, view, ResolutionPolicy, game, Game as EngineGame, Layers, profiler, Material, gfx, Rect, EffectAsset, Vec4, Vec2 } from 'cc';
+  resources, SpriteFrame, Sprite, view, ResolutionPolicy, game, Game as EngineGame, Layers, profiler, Material, gfx, Rect, EffectAsset, Vec4, Vec2, Font } from 'cc';
 import { Combat, SLOT_Y } from './Combat';
-import { DamageNumbers } from './DamageNumbers';
+import { DamageNumbers, classifyDamageNumber, damageNumberPresentation, DAMAGE_ATLAS_PATH, damageGlyphRect } from './DamageNumbers';
 import { renderPanel } from './PanelRenderer';
 import { SlotDrag, workshopSlotAt } from './SlotDrag';
 import { recommendSlot, linkChanges } from './ChoicePreview';
 import { CARS, RECIPES, CarType, ModId } from './Catalog';
+import { ENGINES } from './Locomotives';
+import type { EngineId } from './Locomotives';
+import { newGarage, readGarage, recordRun, selectGarageLoadout } from './Garage';
+import { WORLDS, WORLD_IDS } from './Worlds';
+import type { WorldId } from './Worlds';
+import { ENEMY_LOOKS } from './EnemyPresentation';
 const { ccclass } = _decorator;
-const C = { ink: '#1D1D2E', panel: '#302D43', edge: '#625C78', gold: '#E6B99D', cream: '#F0DFD0', muted: '#B9B3C4', teal: '#A8DADE', red: '#EA937F' };
+const C = { ink: '#102B2D', panel: '#183A3B', edge: '#61766B', gold: '#DAB979', cream: '#F4E4BE', muted: '#ACC0B0', teal: '#8FB6A7', red: '#CF5039' };
 type Particle = { x: number; y: number; vx: number; vy: number; life: number; max: number; size: number; color: string };
 type HitArea = { x: number; y: number; w: number; h: number; action: () => void };
 type Defeated = { node: Node; x: number; y: number; vx: number; vy: number; life: number; angle: number; size: number };
@@ -37,11 +43,32 @@ export class Game extends Component {
   private damageNumbers = new DamageNumbers();
   private showDamage = true;
   private digitFrames:SpriteFrame[]=[];private digitSprites:Node[]=[];
+  private hudVeil:Node|null=null;
+  private titleFont:Font|null=null;private bodyFont:Font|null=null;
+  private garage=newGarage();private garageOpen=false;private runRecorded=true;
+  private engineFrames=new Map<EngineId,SpriteFrame>();private engineFlash=0;
+  private chassisFrames=new Map<EngineId,SpriteFrame>();
+  private chassisMaterial:Material|null=null;
+  private lastLightReady=false;
+  private lastLightEnemyReady=false;
+  private lastLightTitle:Node|null=null;
+  private lastLightTicket:Node|null=null;
+  private lastLightUi:SpriteFrame[]=[];
+  private lastLightFooterIcons:Node[]=[];
+  private lastLightPanel:Node|null=null;
+  private lastLightReorder:Node|null=null;
   private frameCount = 0; private frameSeconds = 0; private fps = 0;
   private debugSpeed = 1;
   private carArt = new Map<number,Node>();
   private selectedSlot = -1;
   private replacementConfirmed = false;
+  private assemblyRemaining = 0;
+  private assemblyDepart = false;
+  private workshopPositions = new Map<string,{x:number;y:number;targetX:number;targetY:number;nodes:Node[]}>();
+  private firstWindFeed = false; private windLessonLife = 0; private windChainBest = 0;
+  private windLessonText = '';
+  private buildCelebration = 0;
+  private celebratedMilestones = new Set<string>();
   private slotDrag = new SlotDrag();
   private dragGraphics!: Graphics;
   private dragLabel!: Label;
@@ -55,12 +82,17 @@ export class Game extends Component {
   private hullFrame:SpriteFrame|null=null;
   private menuFrame:SpriteFrame|null=null;
   private groundArt:Node|null=null;
+  private groundLoop:Node|null=null;
+  private terrainFrames=new Map<WorldId,SpriteFrame>();
   private menuArt:Node|null=null;
   private paperArt:Node|null=null;
+  private workshopArt:Node|null=null;
+  private stationArt:Node|null=null;
   private unitMaterial:Material|null=null;
   private unitAtlas:SpriteFrame|null=null;
   private expansionAtlas:SpriteFrame|null=null;
   private enemyFrames=new Map<number,SpriteFrame>();
+  private enemyAtlasReady=false;
   private unitFrames=new Set<SpriteFrame>();
   private unitPivots=new Map<SpriteFrame,[number,number]>();
   private slicedFrames:SpriteFrame[]=[];
@@ -72,7 +104,7 @@ export class Game extends Component {
   private flowMaterial:Material|null=null;
   private flowParams=new Vec4(0,1,0,0);
   private readonly slotY = SLOT_Y;
-  private readonly combatOffset=-(SLOT_Y[0]+SLOT_Y[SLOT_Y.length-1])/2;
+  private readonly combatOffset=-(SLOT_Y[0]+SLOT_Y[SLOT_Y.length-1])/2-60;
   private entranceRemaining=0;
   private supportEffects: {type:string;x:number;y:number;dx:number;dy:number;size:number;life:number;max:number;color?:string;recipeId?:string}[] = [];
 
@@ -97,6 +129,9 @@ export class Game extends Component {
     this.labels.kills = this.label(this.node, '击破  0', 236, 415, 20, C.gold, 160);
     this.labels.shield = this.label(this.node, '护盾 0/24', 195, 475, 23, '#C9BCEA', 234);
     this.labels.stage = this.label(this.node, '', -310, 415, 20, C.teal, 430, 'left');
+    this.labels.build = this.label(this.node, '', -310, 390, 18, C.gold, 430, 'left');
+    this.labels.milestone = this.label(this.node, '', -310, 366, 17, C.muted, 430, 'left');
+    this.labels.power = this.label(this.node, '', -310, 345, 19, C.teal, 620, 'left');
     this.labels.form = this.label(this.node, '', 0, -442, 25, C.cream, 620);
     this.labels.hint = this.label(this.node, '', -307, -484, 21, C.muted, 425, 'left');
     this.labels.reorder = this.label(this.node, '调整车序', 222, -483, 27, C.teal, 190, 'center','display');
@@ -110,6 +145,7 @@ export class Game extends Component {
       this.labels[key].node.getComponent(UITransform)!.setContentSize(136,40);
     });
     this.labels.toast = this.label(this.node, '', 0, 375, 24, C.gold, 680);
+    this.labels.windLesson = this.label(this.node, '', 0, 309, 24, C.teal, 620);
     this.labels.chain = this.label(this.node, '', 245, 305, 28, C.gold, 205);
     this.labels.boss = this.label(this.node, '', 0, 385, 19, C.red, 570);
     this.overlayNode = new Node('Panels'); this.overlayNode.layer=Layers.Enum.UI_2D; this.node.addChild(this.overlayNode);
@@ -134,9 +170,27 @@ export class Game extends Component {
       }
       globalThis.localStorage?.setItem('doomsday-recipes-v04',JSON.stringify(Array.from(this.knownRecipes)));
     }catch{}
-    this.loadAfterglowArt();
-    resources.load('art/afterglow-damage-digits/spriteFrame',SpriteFrame,(error,frame)=>{
-      if(!error)this.digitFrames=this.stripFrames(frame,12);
+    try{this.garage=readGarage(globalThis.localStorage?.getItem('doomsday-garage-v1')||null,Array.from(this.knownRecipes));}catch{}
+    this.loadLastLightArt();
+    for(const name of ['title','body'])resources.load(`fonts/afterglow-modern-${name}`,Font,(error,font)=>{
+      if(error){console.error(`Afterglow ${name} font failed`,error);return;}if(!this.isValid)return;
+      if(name==='title')this.titleFont=font;else this.bodyFont=font;
+      for(const label of this.node.getComponentsInChildren(Label)){
+        if((name==='title')===(label.node.name==='Display ink')){label.font=font;label.useSystemFont=false;}
+      }
+      this.state='';
+    });
+    resources.load(DAMAGE_ATLAS_PATH,SpriteFrame,(error,frame)=>{
+      if(!error)this.digitFrames=Array.from({length:60},(_,index)=>{
+        const r=damageGlyphRect(Math.floor(index/12),index%12),glyph=new SpriteFrame();
+        glyph.reset({texture:frame.texture,rect:new Rect(r.x,r.y,r.width,r.height)});
+        glyph.packable=false;this.slicedFrames.push(glyph);return glyph;
+      });
+    });
+    resources.load('art/afterglow-hud-veil-v1/spriteFrame',SpriteFrame,(error,frame)=>{
+      if(error||!this.isValid)return;
+      this.hudVeil=this.sprite('Navigation veil',frame,720,256,this.node);
+      this.hudVeil.setPosition(0,512,0);this.hudVeil.setSiblingIndex(this.hud.node.getSiblingIndex());
     });
     // Read-only diagnostic snapshot for smoke checks, without exposing state mutation.
     (globalThis as any).__doomsday = { snapshot: () => ({ phase:this.model.phase,
@@ -145,12 +199,15 @@ export class Game extends Component {
       slots:this.model.slots.map((c,i)=>c?{id:c.id,type:c.type,level:c.level,mods:{...c.mods},range:this.model.getCarRange(i),angle:c.angle}:null),
       links:this.model.links.map(l=>({index:l.index,id:l.recipe.id,driver:l.driver,support:l.support})),pendingCar:this.model.pendingCar,
       offers:this.model.offers.slice(),scrap:this.model.scrap,nextScrap:this.model.nextScrap,supplyCount:this.model.supplyCount,supplyWait:this.model.supplyWait,
-      knownRecipes:Array.from(this.knownRecipes),linkLevel:this.model.linkLevel,
+      stationChoices:this.model.stationChoices,stationCount:this.model.stationCount,route:this.model.route,engine:this.model.engineState,world:this.model.worldState,terrainCount:this.terrainFrames.size,engineArtCount:this.engineFrames.size,garage:this.garage,garageOpen:this.garageOpen,
+      knownRecipes:Array.from(this.knownRecipes),linkLevel:this.model.linkLevel,buildProgression:this.model.buildProgression,buildPower:this.model.buildPower,
       selectedSlot:this.selectedSlot,replacementConfirmed:this.replacementConfirmed,
+      assemblyRemaining:this.assemblyRemaining,workshopMotion:Array.from(this.workshopPositions.entries()).map(([key,p])=>({key,x:p.x,y:p.y,targetX:p.targetX,targetY:p.targetY})),
+      openingFeedback:{feed:this.firstWindFeed,chainBest:this.windChainBest,text:this.windLessonText,life:this.windLessonLife},
       maxHp:this.model.maxHp,boss:this.model.boss?{hp:this.model.boss.hp,maxHp:this.model.boss.maxHp}:null,
       bossCharge:this.model.bossCharge,endReason:this.model.endReason,damageNumbers:this.damageNumbers.items.map(n=>({amount:n.amount,incoming:n.incoming,shield:n.shield})),showDamage:this.showDamage,
       attackStats:this.model.slots.map((_,i)=>this.model.getCarAttackStats(i)),mainDamageSource:this.model.mainDamageSource,
-       art:{style:'afterglow',paper:!!this.paperArt,flow:!!this.flowMaterial,enemyKinds:Array.from(this.enemyFrames.keys()),menu:!!this.menuFrame,ground:!!this.groundArt,unitMaterial:!!this.unitMaterial,fx:this.fxFrames.length,flame:this.flameFrames.length,mods:this.modFrames.size,activeFx:this.fxUsed,locomotive:!!this.loco,headVisible:!!this.loco?.active,zombie:!!this.zombieFrame,hull:!!this.hullFrame,weapons:Array.from(this.weaponFrames.keys()) },
+       art:{style:'lastlight',paper:!!this.paperArt,flow:!!this.flowMaterial,enemyKinds:Array.from(this.enemyFrames.keys()),menu:!!this.menuFrame,ground:!!this.groundArt,unitMaterial:!!this.unitMaterial,fx:this.fxFrames.length,flame:this.flameFrames.length,mods:this.modFrames.size,activeFx:this.fxUsed,locomotive:!!this.loco,headVisible:!!this.loco?.active,zombie:!!this.zombieFrame,hull:!!this.hullFrame,weapons:Array.from(this.weaponFrames.keys()) },
       effects:{particles:this.particles.length,defeated:this.defeated.length,chain:this.chain,
         feeds:this.supportEffects.filter(e=>e.type==='feed').map(e=>({fromY:e.y,toY:e.y+e.dy,life:e.life}))}, events:this.model.events.slice() }) };
   }
@@ -163,6 +220,7 @@ export class Game extends Component {
     this.audio?.close?.(); delete (globalThis as any).__doomsday;
     this.fireMaterial?.destroy();
     this.unitMaterial?.destroy();
+    this.chassisMaterial?.destroy();
     this.flowMaterial?.destroy();
     for(const frame of this.slicedFrames)frame.destroy();
   }
@@ -173,12 +231,17 @@ export class Game extends Component {
   private group(name:string,parent:Node) {const n=new Node(name);n.layer=Layers.Enum.UI_2D;parent.addChild(n);n.addComponent(UITransform).setContentSize(720,1280);return n;}
   private layer(name: string, parent=this.node) { const n=new Node(name);n.layer=Layers.Enum.UI_2D;parent.addChild(n);n.addComponent(UITransform).setContentSize(720,1280);return n.addComponent(Graphics); }
   private label(parent: Node, text: string, x: number, y: number, size: number, color: string, width=600, align='center',font:'display'|'body'='body') {
-    const n=new Node('Text');n.layer=Layers.Enum.UI_2D; parent.addChild(n); const t=n.addComponent(UITransform);t.setContentSize(width,size*2.7);
+    if(font==='display'&&/[Ⅱ→↔≥▶]/.test(text))font='body';
+    const n=new Node(font==='display'?'Display ink':'Body ink');n.layer=Layers.Enum.UI_2D; parent.addChild(n); const t=n.addComponent(UITransform);t.setContentSize(width,size*2.7);
     if(align==='left')t.setAnchorPoint(0,.5);
     n.setPosition(x,y,0);const l=n.addComponent(Label);l.string=text;l.fontSize=size;l.lineHeight=size*1.35;l.color=new Color(color);
     // Cocos expects one canvas font family, not a CSS fallback list.
-    l.fontFamily=font==='display'?'serif':'sans-serif';l.isBold=false;
-    l.spacingX=font==='display'?1:.2;l.enableShadow=font==='display';l.shadowColor=new Color(8,10,18,100);l.shadowOffset=new Vec2(0,-1);l.shadowBlur=1;
+    l.fontFamily='Microsoft YaHei';l.isBold=false;
+    const loaded=font==='display'?this.titleFont:this.bodyFont;
+    if(loaded){l.font=loaded;l.useSystemFont=false;}
+    l.spacingX=font==='display'?.8:.2;l.enableShadow=true;
+    l.shadowColor=new Color(17,22,38,110);l.shadowOffset=new Vec2(0,-1);l.shadowBlur=1;
+    l.enableOutline=false;
     l.horizontalAlign=align==='left'?Label.HorizontalAlign.LEFT:Label.HorizontalAlign.CENTER;
     l.verticalAlign=Label.VerticalAlign.CENTER;l.overflow=Label.Overflow.SHRINK;l.enableWrapText=true;return l;
   }
@@ -195,6 +258,58 @@ export class Game extends Component {
     const frame=new SpriteFrame();
     frame.reset({texture,rect:new Rect(x,y,Math.round((index%4+1)*w)-x,Math.round((Math.floor(index/4)+1)*h)-y)});
     frame.packable=false;this.slicedFrames.push(frame);return frame;
+  }
+  private cropArt(atlas:SpriteFrame,rects:number[][]) {
+    return rects.map(([x,y,w,h])=>{const frame=new SpriteFrame();frame.reset({texture:atlas.texture,rect:new Rect(x,y,w,h)});frame.packable=false;this.slicedFrames.push(frame);return frame;});
+  }
+  private loadLastLightArt() {
+    resources.load('afterglow-chassis-key',EffectAsset,(err,effect)=>{
+      if(err||!this.isValid)return;
+      this.chassisMaterial=new Material();this.chassisMaterial.initialize({effectAsset:effect,defines:{USE_TEXTURE:true}});
+      this.unitMaterial=new Material();this.unitMaterial.initialize({effectAsset:effect,defines:{USE_TEXTURE:true}});this.state='';
+    });
+    resources.load('art/lastlight-city-v1/spriteFrame',SpriteFrame,(err,frame)=>{
+      if(err||!this.isValid)return;
+      for(const id of WORLD_IDS)this.terrainFrames.set(id,frame);
+      this.groundArt=this.sprite('The last light — flooded city',frame,720,1280,this.node);this.groundArt.setSiblingIndex(0);
+      this.menuFrame=frame;this.menuArt=this.sprite('Last light title scene',frame,720,1280,this.node);this.menuArt.setSiblingIndex(this.hud.node.getSiblingIndex());
+      this.paperArt=this.sprite('Ink city behind the ticket',frame,720,1280,this.node);this.paperArt.setSiblingIndex(this.hud.node.getSiblingIndex());this.paperArt.active=false;
+      this.state='';
+    });
+    resources.load('art/lastlight-enemies-v1/spriteFrame',SpriteFrame,(err,atlas)=>{
+      if(err||!this.isValid)return;
+      const rects=[[103,17,218,386],[443,92,317,293],[883,16,296,386],[28,405,428,426],[503,547,234,255],[850,449,370,373],[95,839,247,387],[509,813,250,423],[879,830,304,405]];
+      this.cropArt(atlas,rects).forEach((frame,i)=>this.enemyFrames.set(i,frame));
+      this.zombieFrame=this.enemyFrames.get(0)!;this.lastLightEnemyReady=true;this.enemyAtlasReady=true;
+      for(const n of this.enemySprites.values())n.destroy();this.enemySprites.clear();this.state='';
+    });
+    resources.load('art/lastlight-train-v1/spriteFrame',SpriteFrame,(err,atlas)=>{
+      if(err||!this.isValid)return;
+      const frames=this.cropArt(atlas,[[71,15,171,298],[385,15,171,298],[698,15,171,298],[1029,76,136,200],[80,337,154,281],[333,396,275,212],[719,338,129,283],[999,380,196,228],[88,647,138,260],[396,666,149,238],[729,644,110,268],[1050,622,94,311],[87,943,139,283],[380,976,181,213],[738,973,91,241],[1003,989,189,199]]);
+      for(const frame of frames)this.unitFrames.add(frame);
+      this.unitPivots.set(frames[4],[.5,.32]);this.unitPivots.set(frames[6],[.5,.32]);this.unitPivots.set(frames[11],[.5,.25]);
+      (['dawn','storm','haven'] as EngineId[]).forEach((id,i)=>{this.engineFrames.set(id,frames[i]);this.chassisFrames.set(id,frames[3]);});
+      this.hullFrame=frames[3];
+      (['cannon','fan','flame','tesla','cryo','shield','repair','rail','prism','acid'] as CarType[]).forEach((type,i)=>{this.weaponFrames.set(type,frames[i+4]);this.carIcons.set(type,frames[i+4]);});
+      const mods:Record<string,CarType>={caliber:'cannon',fuel:'flame',pressure:'fan',voltage:'tesla',coolant:'cryo',resonance:'tesla',railpower:'rail',prismfocus:'prism',acidpotency:'acid',rapid:'cannon',reach:'rail',surge:'tesla',lanes:'rail',scatter:'cannon',burst:'cannon',repairkit:'repair',capacitor:'shield',repair:'repair'};
+      for(const [id,type]of Object.entries(mods))this.modFrames.set(id as ModId|'repair',this.weaponFrames.get(type)!);
+      this.loco=this.sprite('Sunlight locomotive',frames[0],110,190,this.trainLayer);
+      this.lastLightReady=true;this.state='';
+    });
+    resources.load('art/lastlight-ui-v1/spriteFrame',SpriteFrame,(err,atlas)=>{
+      if(err||!this.isValid)return;
+      this.lastLightUi=this.cropArt(atlas,[[38,116,690,280],[808,138,694,240],[23,485,727,470],[773,635,733,166]]);
+      this.lastLightTitle=this.sprite('末日列车 — THE LAST LIGHT',this.lastLightUi[0],270,180,this.node);this.lastLightTitle.setSiblingIndex(this.overlayNode.getSiblingIndex());
+      this.lastLightTicket=this.sprite('Railway ticket HUD',this.lastLightUi[1],720,300,this.node);this.lastLightTicket.setSiblingIndex(this.hud.node.getSiblingIndex());this.state='';
+      this.lastLightPanel=this.sprite('Printed railway dispatch',this.lastLightUi[2],628,900,this.node);this.lastLightPanel.setPosition(0,-5,0);this.lastLightPanel.setSiblingIndex(this.overlayNode.getSiblingIndex());this.lastLightPanel.active=false;
+      this.lastLightReorder=this.sprite('Vermilion formation ticket',this.lastLightUi[3],390,66,this.node);this.lastLightReorder.setPosition(0,-511,0);this.lastLightReorder.setSiblingIndex(this.hud.node.getSiblingIndex());this.lastLightReorder.active=false;
+    });
+    resources.load('art/afterglow-fx-v07/spriteFrame',SpriteFrame,(err,frame)=>{
+      if(err||!this.isValid)return;this.fxFrames=Array.from({length:8},(_,i)=>this.atlasCell(frame,i));
+    });
+    resources.load('art/afterglow-flame-v08/spriteFrame',SpriteFrame,(err,frame)=>{
+      if(err||!this.isValid)return;this.flameFrames=this.cropArt(frame,[[20,170,360,540],[392,170,416,540],[806,170,570,540],[1390,170,370,540]]);
+    });
   }
   private loadAfterglowArt() {
     resources.load('art/afterglow-mods-v07/spriteFrame',SpriteFrame,(err,frame)=>{
@@ -227,6 +342,16 @@ export class Game extends Component {
       this.paperArt=this.sprite('Gouache panel ground',frame,720,1280,this.node);
       this.paperArt.setSiblingIndex(this.hud.node.getSiblingIndex());this.paperArt.active=false;this.state='';
     });
+    resources.load('art/afterglow-workshop-v1/spriteFrame',SpriteFrame,(err,frame)=>{
+      if(err){console.error('Workshop artwork failed',err);return;}if(!this.isValid)return;
+      this.workshopArt=this.sprite('Painted railway workshop',frame,720,1280,this.node);
+      this.workshopArt.setSiblingIndex(this.hud.node.getSiblingIndex());this.workshopArt.active=false;this.state='';
+    });
+    resources.load('art/afterglow-station-v1/spriteFrame',SpriteFrame,(err,frame)=>{
+      if(err){console.error('Station artwork failed',err);return;}if(!this.isValid)return;
+      this.stationArt=this.sprite('Painted railway station',frame,720,1280,this.node);
+      this.stationArt.setSiblingIndex(this.hud.node.getSiblingIndex());this.stationArt.active=false;this.state='';
+    });
     resources.load('afterglow-flow',EffectAsset,(err,effect)=>{
       if(err){console.error('Flow material failed',err);return;}if(!this.isValid)return;
       this.flowMaterial=new Material();this.flowMaterial.initialize({effectAsset:effect,defines:{USE_TEXTURE:true}});
@@ -238,9 +363,43 @@ export class Game extends Component {
       this.menuArt=this.sprite('Afterglow menu',frame,720,1280,this.node);
       this.menuArt.setSiblingIndex(this.overlayNode.getSiblingIndex());this.menuArt.active=false;this.state='';
     });
-    resources.load('art/afterglow-ground/spriteFrame',SpriteFrame,(err,frame)=>{
-      if(err){console.error('Terrain artwork failed',err);return;}if(!this.isValid)return;
-      this.groundArt=this.sprite('Painted ground',frame,720,1000,this.node);this.groundArt.setSiblingIndex(0);
+    for(const id of WORLD_IDS)resources.load(`art/${WORLDS[id].art}/spriteFrame`,SpriteFrame,(err,frame)=>{
+      if(err){console.error(`${id} terrain artwork failed`,err);return;}if(!this.isValid)return;
+      this.terrainFrames.set(id,frame);
+      if(id==='city'){
+        this.groundArt=this.sprite('Painted ground',frame,720,1080,this.node);this.groundArt.setSiblingIndex(0);
+        this.groundLoop=this.sprite('Passing terrain',frame,720,1080,this.node);this.groundLoop.setSiblingIndex(0);
+      }
+    });
+    resources.load('art/afterglow-locomotives-v1/spriteFrame',SpriteFrame,(err,atlas)=>{
+      if(err){console.error('Locomotive artwork failed',err);return;}if(!this.isValid)return;
+      const regions=[[136,5,312,1008],[614,8,310,1008],[1066,7,376,1012]];
+      (['dawn','storm','haven'] as EngineId[]).forEach((id,index)=>{
+        const [x,y,w,h]=regions[index],frame=new SpriteFrame();frame.reset({texture:atlas.texture,rect:new Rect(x,y,w,h)});
+        frame.packable=false;this.slicedFrames.push(frame);this.engineFrames.set(id,frame);
+      });this.state='';
+    });
+    resources.load('afterglow-chassis-key',EffectAsset,(err,effect)=>{
+      if(err||!this.isValid)return;
+      this.chassisMaterial=new Material();this.chassisMaterial.initialize({effectAsset:effect,defines:{USE_TEXTURE:true}});
+      this.state='';
+    });
+    resources.load('art/afterglow-chassis-v1/spriteFrame',SpriteFrame,(err,atlas)=>{
+      if(err||!this.isValid)return;
+      const regions=[[49,170,462,690],[537,170,462,690],[1025,170,462,690]];
+      (['dawn','storm','haven'] as EngineId[]).forEach((id,index)=>{
+        const [x,y,w,h]=regions[index],frame=new SpriteFrame();frame.reset({texture:atlas.texture,rect:new Rect(x,y,w,h)});
+        frame.packable=false;this.slicedFrames.push(frame);this.chassisFrames.set(id,frame);
+      });this.state='';
+    });
+    resources.load('art/afterglow-enemies-v2/spriteFrame',SpriteFrame,(err,atlas)=>{
+      if(err){console.error('Enemy artwork failed',err);return;}if(!this.isValid)return;
+      const regions=[[59,79,315,279],[501,15,249,387],[862,37,366,354],[13,409,414,429],[465,455,327,331],[865,463,359,329],[43,893,346,317],[445,836,365,382],[861,834,366,390]];
+      regions.forEach(([x,y,w,h],kind)=>{
+        const frame=new SpriteFrame();frame.reset({texture:atlas.texture,rect:new Rect(x,y,w,h)});frame.packable=false;
+        this.slicedFrames.push(frame);this.enemyFrames.set(kind,frame);
+      });
+      this.enemyAtlasReady=true;for(const n of this.enemySprites.values())n.destroy();this.enemySprites.clear();this.state='';
     });
     resources.load('art/afterglow-units-v06/spriteFrame',SpriteFrame,(err,frame)=>{
       if(err){console.error('Unit artwork failed',err);return;}if(!this.isValid)return;
@@ -251,7 +410,7 @@ export class Game extends Component {
       this.unitMaterial=new Material();this.unitMaterial.initialize({effectAsset:effect,defines:{USE_TEXTURE:true}});this.finishUnitArt();this.finishExpansionArt();
       for(const parent of [this.trainLayer,this.overlayNode])for(const n of parent.children){const s=n.getComponent(Sprite);if(s?.spriteFrame&&this.unitFrames.has(s.spriteFrame))s.customMaterial=this.unitMaterial;}
     });
-    resources.load('art/afterglow-fx-v06/spriteFrame',SpriteFrame,(err,frame)=>{
+    resources.load('art/afterglow-fx-v07/spriteFrame',SpriteFrame,(err,frame)=>{
       if(err){console.error('Effect artwork failed',err);return;}if(!this.isValid)return;
       this.fxFrames=Array.from({length:8},(_,i)=>this.atlasCell(frame,i));this.state='';
     });
@@ -268,14 +427,16 @@ export class Game extends Component {
     this.loco=this.sprite('Locomotive',frames[7],124,155,this.trainLayer);this.loco.angle=180;this.state='';
   }
   private finishExpansionArt() {
-    if(!this.expansionAtlas||!this.unitMaterial||this.enemyFrames.size)return;
+    if(!this.expansionAtlas||!this.unitMaterial||this.weaponFrames.has('rail'))return;
     const frames=Array.from({length:8},(_,i)=>this.atlasCell(this.expansionAtlas!,i));
     for(const frame of frames)this.unitFrames.add(frame);
     this.unitPivots.set(frames[0],[241/444,1-301/444]);
     (['rail','prism','acid'] as CarType[]).forEach((type,i)=>this.weaponFrames.set(type,frames[i]));
-    this.enemyFrames.set(0,frames[3]);this.enemyFrames.set(1,frames[3]);
-    this.enemyFrames.set(6,frames[4]);this.enemyFrames.set(7,frames[5]);this.enemyFrames.set(8,frames[6]);
-    for(const kind of [2,3,4,5])this.enemyFrames.set(kind,frames[7]);
+    if(!this.enemyAtlasReady){
+      this.enemyFrames.set(0,frames[3]);this.enemyFrames.set(1,frames[3]);
+      this.enemyFrames.set(6,frames[4]);this.enemyFrames.set(7,frames[5]);this.enemyFrames.set(8,frames[6]);
+      for(const kind of [2,3,4,5])this.enemyFrames.set(kind,frames[7]);
+    }
     for(const n of this.enemySprites.values())n.destroy();this.enemySprites.clear();this.state='';
   }
   /** Reuse effect sprites; their black source canvas vanishes through additive blending. */
@@ -287,6 +448,8 @@ export class Game extends Component {
   }
   private artEffect(index:number,x:number,y:number,w:number,h=w,angle=0,alpha=1,tint='#FFFFFF') {
     const frame=index>=8?this.flameFrames[index-8]:this.fxFrames[index];if(!frame||this.fxUsed>=100)return false;
+    // v07 leaves safe black gutters around each brush shape; preserve its on-field footprint.
+    if(index<8){w*=1.35;h*=1.35;}
     let n=this.fxPool[this.fxUsed];
     if(!n){n=this.sprite('Painted effect',frame,w,h,this.vortexLayer);if(this.flowMaterial)n.getComponent(Sprite)!.customMaterial=this.flowMaterial;else this.emission(n.getComponent(Sprite)!);this.fxPool.push(n);}
     this.fxUsed++;n.active=true;n.setPosition(x,y,0);n.angle=angle;n.setScale(1,1,1);
@@ -312,25 +475,22 @@ export class Game extends Component {
     g.fillColor=new Color(color);if(r)g.roundRect(x,y,w,h,r);else g.rect(x,y,w,h);g.fill();
   }
   private circle(g:Graphics,x:number,y:number,r:number,color:string) {g.fillColor=new Color(color);g.circle(x,y,r);g.fill();}
-  /** Fixed, broad pigment patches and broken edges: never frame-random texture. */
+  /** Quiet interface planes keep detailed handpainted scenery in the foreground. */
   private paintRect(g:Graphics,x:number,y:number,w:number,h:number,color:string) {
     if(w<=0||h<=0)return;
-    const e=Math.min(7,h*.13,w*.035);
-    this.polygon(g,[x+e,y+2,x+w*.29,y,x+w*.57,y+e*.3,x+w-e,y,x+w,y+h*.36,x+w-e*.6,y+h-e,x+w*.72,y+h,x+w*.4,y+h-e*.4,x+e,y+h,x,y+h*.58],color);
-    if(h<18||w<35)return;
-    const base=new Color(color),alpha=Math.round(base.a*.09).toString(16).padStart(2,'0');
-    this.polygon(g,[x+e,y+h*.56,x+w*.16,y+h*.48,x+w*.42,y+h*.65,x+w*.63,y+h*.62,x+w*.56,y+h-e,x+e,y+h-e],'#E6B99D'+alpha);
-    this.polygon(g,[x+w*.53,y+e,x+w*.88,y+e,x+w-e,y+h*.32,x+w*.73,y+h*.42,x+w*.62,y+h*.24],'#A8DADE'+alpha);
-    this.line(g,[x+e*2,y+h-e,x+w*.24,y+h-e*1.4,x+w*.43,y+h-e*.7],'#D4BDD033',1);
-    this.line(g,[x+w*.65,y+e*.8,x+w*.91,y+e*1.3],'#11162366',1.5);
+    this.rect(g,x,y,w,h,color,Math.min(6,h*.16));
   }
   private line(g:Graphics,points:number[],color:string,width=2) {
     g.strokeColor=new Color(color);g.lineWidth=width;g.moveTo(points[0],points[1]);
     for(let i=2;i<points.length;i+=2)g.lineTo(points[i],points[i+1]);g.stroke();
   }
   private begin() {
+    this.finishRun();this.garageOpen=false;this.runRecorded=false;this.engineFlash=0;
+    this.buildCelebration=0;this.celebratedMilestones.clear();
+    this.assemblyRemaining=0;this.assemblyDepart=false;this.workshopPositions.clear();
+    this.firstWindFeed=false;this.windLessonLife=0;this.windChainBest=0;this.windLessonText='';
     this.damageNumbers.clear();this.flameUntil=0;this.scrapPulse=0;
-    this.unlockAudio();this.model.start(this.seed++,true);this.particles=[];this.chain=0;this.chainLife=0;
+    this.unlockAudio();this.model.start(this.seed++,true,this.garage.loadout);this.particles=[];this.chain=0;this.chainLife=0;
     this.entranceRemaining=1;
     this.visualTime=0;this.shake=0;this.emberClock=0;
     this.supportEffects=[];this.selectedSlot=-1;this.atlas=false;this.newRecipes.clear();
@@ -342,10 +502,19 @@ export class Game extends Component {
     for(const n of this.vortexSprites.values())n.destroy();this.vortexSprites.clear();
     this.toast('击破敌人，收集改装废料');this.tone(180,.15);
   }
+  private saveGarage() {
+    try{globalThis.localStorage?.setItem('doomsday-garage-v1',JSON.stringify(this.garage));}catch{}
+  }
+  private finishRun() {
+    if(this.runRecorded||this.model.time<=0)return;
+    this.garage=recordRun(this.garage,{time:this.model.time,wave:this.model.wave,kills:this.model.kills,
+      bosses:this.model.buildProgression.metrics.bossKills,recipes:Array.from(this.knownRecipes)});
+    this.runRecorded=true;this.saveGarage();
+  }
   private openWorkshop(slot=-1) {
     if(this.model.openWorkshop()){this.selectedSlot=slot;this.atlas=false;}
   }
-  private canDrag() { return this.model.phase==='workshop'&&!this.model.pendingCar&&!this.atlas; }
+  private canDrag() { return this.model.phase==='workshop'&&!this.model.pendingCar&&!this.atlas&&this.assemblyRemaining===0; }
   private touchPoint(event:EventTouch) {
     const p=event.getUILocation();
     return this.node.getComponent(UITransform)!.convertToNodeSpaceAR(new Vec3(p.x,p.y,0));
@@ -386,11 +555,11 @@ export class Game extends Component {
       g.strokeColor=new Color(C.teal);g.lineWidth=3;g.roundRect(x-spacing/2+5,42,spacing-10,197,8);g.stroke();
     }
     const x=Math.max(-290,Math.min(290,d.x)),y=Math.max(100,Math.min(175,d.y+35));
-    this.rect(g,x-57,y-56,114,113,'#222B3AED',12);
+    this.rect(g,x-57,y-56,114,113,'#123033ED',12);
     if(this.dragIcon)this.dragIcon.setPosition(x,y+5,0);
     else this.drawCarModule(g,this.model.slots[d.source]!.type,x,y,.7,Math.PI/2);
     this.dragLabel.string=target<0?'移出槽位 · 松手取消':target===d.source?'拖到另一槽位':this.model.slots[target]?`松手交换至 ${target+1} 号位`:`松手移至 ${target+1} 号位`;
-    this.rect(g,-284,-263,568,244,'#252437FA',6);
+    this.rect(g,-284,-263,568,244,'#123033FA',6);
     this.dragLabel.node.setPosition(0,-211,0);
     if(target>=0&&target!==d.source){
       const before=this.model.slots.map(car=>car?.type??null),after=before.slice();
@@ -401,6 +570,7 @@ export class Game extends Component {
     }else for(const label of this.dragChanges)label.string='';
   }
   private touch(event: EventTouch) {
+    if(this.assemblyRemaining>0)return;
     const d=this.slotDrag;
     if(d.pointer>=0){
       if(event.getID()!==d.pointer)return;
@@ -416,12 +586,12 @@ export class Game extends Component {
     this.unlockAudio();
     const p=event.getUILocation(), local=this.node.getComponent(UITransform)!.convertToNodeSpaceAR(new Vec3(p.x,p.y,0));
     for(let i=this.hitAreas.length-1;i>=0;i--){const a=this.hitAreas[i];if(Math.abs(local.x-a.x)<=a.w/2&&Math.abs(local.y-a.y)<=a.h/2){a.action();this.tone(470,.045);return;}}
-    if(this.model.phase==='combat'&&Math.abs(local.x)<65){
+    if(this.model.phase==='combat'&&local.y>=-540&&Math.abs(local.x)<65){
       const worldY=local.y-this.worldNode.position.y;
       const slot=this.slotY.findIndex(y=>Math.abs(y-worldY)<52);
       if(slot>=0){this.openWorkshop(slot);return;}
     }
-    if(local.y < -540) {
+    if(local.y < -582) {
       if(local.x < -216) this.sound=!this.sound;
       else if(local.x < -72) this.lowMotion=!this.lowMotion;
       else if(local.x < 72) this.debugSpeed=this.debugSpeed===4?1:this.debugSpeed*2;
@@ -433,6 +603,17 @@ export class Game extends Component {
   private unlockAudio() {
     try { const AC=(globalThis as any).AudioContext || (globalThis as any).webkitAudioContext;
       if(!this.audio&&AC)this.audio=new AC();this.audio?.resume?.(); }catch{}
+  }
+  private formationSound() {
+    if(!this.sound||!this.audio)return;
+    const ctx=this.audio,now=ctx.currentTime;
+    try{for(const [i,freq]of [261.63,392,523.25].entries()){
+      const oscillator=ctx.createOscillator(),gain=ctx.createGain(),start=now+i*.07;
+      oscillator.type='triangle';oscillator.frequency.setValueAtTime(freq,start);
+      gain.gain.setValueAtTime(0,start);gain.gain.linearRampToValueAtTime(.035,start+.025);
+      gain.gain.exponentialRampToValueAtTime(.001,start+.55);
+      oscillator.connect(gain);gain.connect(ctx.destination);oscillator.start(start);oscillator.stop(start+.56);
+    }}catch{}
   }
   private tone(freq:number, length:number, kind='sine') {
     if(!this.sound||!this.audio)return;
@@ -477,6 +658,10 @@ export class Game extends Component {
   }
   private toast(text:string) {this.toastText=text;this.toastLife=2.2;}
   update(dt:number) {
+    if(this.assemblyRemaining>0 && this.model.phase==='workshop'){
+      this.assemblyRemaining=Math.max(0,this.assemblyRemaining-Math.min(.1,Math.max(0,dt)));
+      if(this.assemblyRemaining===0){if(this.assemblyDepart)this.model.resumeWorkshop();this.assemblyDepart=false;this.state='';}
+    }
     this.updateDrag(dt);
     const before=this.model.phase,realDelta=Math.min(Math.max(dt,0),.1);
     const entering=this.entranceRemaining>0;
@@ -492,16 +677,19 @@ export class Game extends Component {
     this.frameCount++;this.frameSeconds+=dt;if(this.frameSeconds>=1){this.fps=Math.round(this.frameCount/this.frameSeconds);this.frameCount=0;this.frameSeconds=0;}
     const frozen=['paused','workshop','supply'].includes(this.model.phase);
     if(!frozen)this.damageNumbers.advance(realDelta);
+    if(!frozen)this.windLessonLife=Math.max(0,this.windLessonLife-realDelta);
+    if(!frozen)this.buildCelebration=Math.max(0,this.buildCelebration-realDelta);
+    if(!frozen)this.engineFlash=Math.max(0,this.engineFlash-realDelta);
     this.scrapPulse=Math.max(0,this.scrapPulse-realDelta*3);
     if(!frozen){this.toastLife=Math.max(0,this.toastLife-delta);this.shake=Math.max(0,this.shake-delta*20);
       this.chainLife=Math.max(0,this.chainLife-delta);if(this.chainLife===0)this.chain=0;}
     if(!frozen)for(const p of this.particles){p.life-=delta;p.x+=p.vx*delta;p.y+=p.vy*delta;const drag=Math.pow(.96,delta*60);p.vx*=drag;p.vy*=drag;}
     this.particles=this.particles.filter(p=>p.life>0);
     for(const d of this.defeated){
-      if(!frozen){d.life-=delta;d.x+=d.vx*delta;d.y+=d.vy*delta;d.angle+=delta*220;}
+      if(!frozen){d.life-=delta;d.x+=d.vx*delta;d.y+=d.vy*delta;d.angle+=delta*18;}
       d.node.setPosition(d.x,d.y,0);d.node.angle=d.angle;
       const fade=Math.max(0,d.life/.42);d.node.setScale(.6+.4*fade,.6+.4*fade,1);
-      d.node.getComponent(Sprite)!.color=new Color(154,124,83,Math.round(210*fade));
+      d.node.getComponent(Sprite)!.color=new Color(24,48,47,Math.round(210*fade));
       if(d.life<=0)d.node.destroy();
     }
     this.defeated=this.defeated.filter(d=>d.life>0);
@@ -512,14 +700,20 @@ export class Game extends Component {
       if(this.showDamage && e.damage && ['hit','damage','shield-damage','shield'].includes(e.type)){
         const incoming=e.type==='damage'||e.type==='shield-damage',shield=e.type==='shield-damage'||e.type==='shield';
         const color=shield?'#ABDDEA':incoming?'#F3A18E':e.element==='ice'?'#BDEBF1':e.element==='electric'?'#D8C4ED':e.element==='fire'?'#F1BB91':e.element==='acid'?'#D4DFA4':'#F5D6A6';
-        this.damageNumbers.add(`${incoming?e.type:e.enemyId}:${shield?'shield':e.element??e.source??''}`,e.x,e.y,e.damage,color,incoming,shield);
+        const kind=classifyDamageNumber(e.damage,e.source||'',incoming,shield);
+        this.damageNumbers.add(`${incoming?e.type:e.enemyId}:${kind}:${shield?'shield':e.element??e.source??''}`,e.x,e.y,e.damage,color,incoming,shield,kind);
       }
-      if(e.type==='shield-damage')continue;
+      if(e.type==='shield-damage'){
+        const type=(e.dx??this.model.shieldHp)<=0?'shield-break':'shield-hit';
+        this.supportEffects.push({type,x:e.x,y:e.y,dx:0,dy:0,size:e.size,life:.65,max:.65});
+        continue;
+      }
       if(e.type==='discovery'&&e.recipeId){
         const recipe=RECIPES.find(r=>r.id===e.recipeId);
         if(recipe&&!this.knownRecipes.has(recipe.id)){
           this.knownRecipes.add(recipe.id);this.newRecipes.add(recipe.id);discoveries.push(recipe.name);this.tone(710,.35,'triangle');this.shake=Math.max(this.shake,3);
           try{globalThis.localStorage?.setItem('doomsday-recipes-v04',JSON.stringify(Array.from(this.knownRecipes)));}catch{}
+          this.garage=readGarage(JSON.stringify(this.garage),Array.from(this.knownRecipes));this.saveGarage();
         }
         continue;
       }
@@ -527,7 +721,10 @@ export class Game extends Component {
         const recipe=RECIPES.find(r=>r.id===e.recipeId);
         const support=recipe&&(recipe.a===recipe.executor?recipe.b:recipe.a);
         const color=support?CARS[support].color:C.teal;
-        this.supportEffects.push({type:'feed',x:e.x,y:e.y,dx:e.dx??0,dy:e.dy??0,size:20,life:.38,max:.38,color});
+        this.supportEffects.push({type:'feed',x:e.x,y:e.y,dx:e.dx??0,dy:e.dy??0,size:20,life:.38,max:.38,color,recipeId:e.recipeId});
+        if(e.recipeId==='cannon-fan'&&!this.firstWindFeed){
+          this.firstWindFeed=true;this.windLessonText='风扇供能 → 火炮射出贯穿弹';this.windLessonLife=5;
+        }
         if(this.supportEffects.length>48)this.supportEffects.shift();
         continue;
       }
@@ -535,11 +732,19 @@ export class Game extends Component {
         this.supportEffects.push({type:'feed',x:e.x,y:e.y,dx:0,dy:0,size:24,life:.28,max:.28,recipeId:e.recipeId});
         continue;
       }
-      if(e.type==='milestone'){this.toast('第一站突破 · 当前编组继续前进');this.shake=Math.max(this.shake,4);this.tone(520,.4,'triangle');continue;}
-      if(e.type==='enemy-introduced'){
-        const names:Record<number,string>={1:'快速敌人',2:'重甲敌人',4:'耐火敌人',5:'绝缘敌人',6:'护盾敌人',7:'分裂敌人',8:'再生敌人'};
-        this.toast(`${names[e.enemyKind??0]||'敌群'}抵达`);continue;
+      if(e.type==='build-overdrive'){
+        this.buildCelebration=1.1;this.toast(`${this.model.buildPower.overdrive.name} · 全列爆发`);
+        this.shake=Math.max(this.shake,3);this.formationSound();continue;
       }
+      if(e.type==='locomotive-skill'){
+        this.engineFlash=.8;this.toast(`${this.model.engineState?.name} · ${this.model.engineState?.skillName}`);
+        this.formationSound();continue;
+      }
+      if(e.type==='milestone'){this.toast('首领突破 · 下次补给追加改装');this.shake=Math.max(this.shake,4);this.tone(520,.4,'triangle');continue;}
+      if(e.type==='enemy-introduced'){
+        const look=ENEMY_LOOKS[e.enemyKind??0];this.toast(`${look.name} · ${look.hint}`);continue;
+      }
+      if(e.type==='region'){this.toast(`驶入 ${this.model.worldState.name} · ${this.model.worldState.enemyHint}`);this.formationSound();continue;}
       if(e.type==='demonstration-pack')continue;
       if(e.type==='boss-charge'){this.toast('破阵者蓄力 · 即将冲击列车');this.tone(145,.3,'sawtooth');continue;}
       if(e.type==='cold-shatter'){
@@ -547,6 +752,14 @@ export class Game extends Component {
         this.weaponSound('ice');continue;
       }
       if(e.type==='parallel-shot'){this.weaponSound('parallel');continue;}
+      if(e.type==='pierce-hit'){
+        this.supportEffects.push({type:'wind-impact',x:e.x,y:e.y,dx:e.dx??0,dy:e.dy??0,size:e.size,life:.45,max:.45,recipeId:e.recipeId});
+        if(e.size>=2 && e.size>this.windChainBest){
+          this.windChainBest=e.size;this.windLessonText=`一弹贯穿 ${e.size} 名敌人 · 风扇 → 火炮`;this.windLessonLife=4;
+          this.tone(850,.10,'triangle');
+        }
+        continue;
+      }
       if(e.type==='pierce'){this.weaponSound('pierce');continue;}
       if(e.type==='link-shot'){
         const recipe=RECIPES.find(r=>r.id===e.recipeId),electric=recipe?.executor==='tesla';
@@ -556,7 +769,7 @@ export class Game extends Component {
       const visualKind=e.type==='focused-flame'&&e.recipeId==='flame-prism'?'prismbeam':({fan:'wind','focused-flame':'beam','burning-arc':'tesla',conduction:'tesla',
         'burn-blast':'blast',thermal:'thermalburst',blizzard:'cryo',shatter:'iceblast'} as Record<string,string>)[e.type]||e.type;
       if(['rail-beam','train-shield','flame','tesla','cryo','wind','beam','prismbeam','blast','thermalburst','slam','iceblast','burn','acid','prism','regen','shield','brood','repair','passive-repair','cannon-impact'].includes(visualKind)){
-        const life=e.type==='rail-beam'?.22:e.type==='flame'?.36:e.type==='tesla'?.24:e.type==='repair'?.8:e.type==='cannon-impact'?.38:.5;
+        const life=e.type==='rail-beam'?.38:e.type==='train-shield'?.9:e.type==='flame'?.36:e.type==='tesla'?.24:e.type==='repair'?.8:e.type==='cannon-impact'?.38:.5;
         this.supportEffects.push({type:visualKind,x:e.x,y:e.y,dx:e.dx??0,dy:e.dy??0,size:e.size,life,max:life,recipeId:e.recipeId});
         if(this.supportEffects.length>32)this.supportEffects.shift();
         if(e.type==='slam'){this.shake=5;this.tone(55,.25,'triangle');this.toast('首领冲击 · 命中列车');}
@@ -569,12 +782,16 @@ export class Game extends Component {
       }
       if(e.type==='boss'){this.toast('精英破阵者 · 击破后继续前进');this.tone(95,.4,'triangle');continue;}
       if(e.type==='wave'){
-        this.toast(`第 ${this.model.wave} 波 · 敌群正在增强`);
+        this.toast(`第 ${this.model.wave} 波 · ${this.model.encounterBeat}`);
         this.tone(210,.28,'triangle');continue;
       }
-      if(e.type==='hit'&&this.supportEffects.length<42)this.supportEffects.push({type:'impact',x:e.x,y:e.y,dx:0,dy:0,size:40,life:.18,max:.18});
+      if((e.type==='hit'||e.type==='shield')&&this.supportEffects.length<48){
+        const heavy=(e.damage??0)>=40,color=e.type==='shield'?'#A8DCDD':e.element==='fire'?'#F1B080':e.element==='electric'?'#F4D699':e.element==='ice'?'#B4E8EE':e.element==='acid'?'#CEDB9D':'#F1CFAB';
+        const life=heavy?.28:.18;
+        this.supportEffects.push({type:e.type==='shield'?'shield-impact':'ink-impact',x:e.x,y:e.y,dx:e.dx??Math.sign(e.x),dy:e.dy??0,size:heavy?38:22,life,max:life,color});
+      }
       const count=e.type==='upgrade'?40:e.type==='kill'?7:e.type==='hit'?2:9;
-      const color=e.type==='kill'?C.gold:e.type==='damage'?C.red:e.type==='upgrade'?C.teal:C.gold;
+      const color=e.type==='kill'?C.ink:e.type==='damage'?C.red:e.type==='upgrade'?C.teal:C.gold;
       for(let i=0;i<count&&this.particles.length<200;i++){
         const a=e.type==='kill'?Math.atan2(e.dy??0,e.dx??1)+(i/count-.5)*1.9:(i/count)*Math.PI*2+this.visualTime, speed=e.type==='upgrade'?150:45+Math.random()*100;
         this.particles.push({x:e.x,y:e.y,vx:Math.cos(a)*speed,vy:Math.sin(a)*speed,life:.4+Math.random()*.3,max:.7,size:e.type==='kill'?3:5,color});
@@ -594,6 +811,13 @@ export class Game extends Component {
     if(this.flameBed){const active=this.sound&&this.model.phase==='combat'&&this.audio.currentTime<this.flameUntil;
       this.flameBed.gain.gain.setTargetAtTime(active?.022:0,this.audio.currentTime,.035);}
     if(discoveries.length)this.toast(`发现联动 · ${discoveries.join(' / ')}`);
+    if(this.model.phase==='combat'){
+      const newly=this.model.buildProgression.milestones.filter(v=>v.completed&&!this.celebratedMilestones.has(v.id));
+      for(const milestone of newly)this.celebratedMilestones.add(milestone.id);
+      if(newly.length&&!discoveries.length&&this.toastLife<.5){
+        this.toast(`构筑成长 · ${newly[newly.length-1].title}`);this.tone(620,.22,'triangle');
+      }
+    }
     if(frameKills){this.chain+=frameKills;this.chainLife=1.25;this.tone(130+Math.min(12,this.chain)*16,.065,'triangle');
       if(frameKills>=3)this.shake=Math.max(this.shake,Math.min(4,frameKills));}
     if(this.model.phase==='combat'){
@@ -609,26 +833,49 @@ export class Game extends Component {
     const cameraY=this.combatOffset-650*Math.pow(this.entranceRemaining,3);
     this.worldNode.setPosition(!this.lowMotion?Math.sin(this.visualTime*85)*this.shake:0,cameraY,0);
     this.fx.node.setPosition(this.worldNode.position.x,cameraY,0);
-    if(this.loco){this.loco.active=this.model.phase==='menu'||entering||this.model.time<1.4;this.loco.setPosition(0,235+185*Math.min(1,this.model.time/1.4),0);}
+    if(this.loco){
+      this.loco.active=true;this.loco.setPosition(0,188,0);
+      const engine=this.model.runLoadout?.engine||this.garage.loadout.engine,frame=this.engineFrames.get(engine);
+      if(frame){const sprite=this.loco.getComponent(Sprite)!;sprite.spriteFrame=frame;sprite.customMaterial=this.lastLightReady?this.unitMaterial:null;this.loco.angle=0;this.loco.getComponent(UITransform)!.setAnchorPoint(.5,.5);this.loco.getComponent(UITransform)!.setContentSize(190*frame.rect.width/frame.rect.height,190);}
+    }
     this.fxUsed=0;
     this.drawGround();this.drawWorld();this.drawEffects();this.drawHUD();
     for(let i=this.fxUsed;i<this.fxPool.length;i++)this.fxPool[i].active=false;
-    const nextState=`${this.model.phase}:${this.model.revision}:${this.selectedSlot}:${this.replacementConfirmed}:${this.atlas}:${this.atlasPage}:${this.atlasCars}:${this.knownRecipes.size}`;
+    if(this.model.phase==='lose'||this.model.phase==='win')this.finishRun();
+    const nextState=`${this.model.phase}:${this.model.revision}:${this.selectedSlot}:${this.replacementConfirmed}:${this.atlas}:${this.atlasPage}:${this.atlasCars}:${this.knownRecipes.size}:${this.assemblyRemaining>0}:${this.garageOpen}:${this.garage.loadout.engine}:${this.garage.loadout.module}`;
     if(this.state!==nextState){this.state=nextState;this.drawPanel();}
+    if(this.model.phase==='workshop'&&!this.atlas)for(const p of this.workshopPositions.values()){
+      const blend=this.lowMotion?1:1-Math.exp(-realDelta*13);
+      p.x+=(p.targetX-p.x)*blend;p.y+=(p.targetY-p.y)*blend;
+      if(Math.hypot(p.targetX-p.x,p.targetY-p.y)<.3){p.x=p.targetX;p.y=p.targetY;}
+      for(const node of p.nodes)if(node.isValid)node.setPosition(p.x,p.y,0);
+    }
   }
   private drawGround() {
     const g=this.bg;g.clear();
-    if(!this.groundArt)this.rect(g,-360,-640,720,1280,C.ink);
-    this.rect(g,-61,-450,122,930,'#181B2D55');
-    for(let i=0;i<25;i++){
-      const y=((i*40-this.visualTime*66)%1000+1000)%1000-500;
-      const tilt=Math.sin(i*7)*2;
-      this.paintRect(g,-56,y,112,9,'#242133B8');
-      this.line(g,[-52,y+3,-8,y+5+tilt,36,y+4],'#88728B80',2);
+    const shown=this.model.phase!=='menu';this.worldNode.active=shown;this.fx.node.active=shown;
+    const visible=view.getVisibleSize(),cover=Math.max(1,visible.width/720,visible.height/1280);
+    for(const art of [this.groundArt,this.menuArt,this.paperArt])if(art)art.getComponent(UITransform)!.setContentSize(720*cover,1280*cover);
+    if(this.groundArt){this.groundArt.active=true;this.groundArt.setPosition(0,0,0);}
+    else this.rect(g,-2000,-2000,4000,4000,C.ink);
+    if(!shown)return;
+    const travel=this.lowMotion?0:this.visualTime*16;
+    // The scenic horizon stays still. Track joints and water wakes carry forward motion.
+    for(const side of [-1,1]){
+      const rail:number[]=[];
+      for(let i=0;i<=28;i++){const t=i/28;rail.push(side*(3+39*t),520-965*t*t);}
+      this.line(g,rail,'#0B2528B8',7);this.line(g,rail,'#BCA67C80',2);
     }
-    for(const x of [-39,39]){this.line(g,[x,-500,x,500],'#171728',7);this.line(g,[x+1,-500,x+1,500],'#92819B88',2);}
-    // Sparse projected coordinates do not compete with the painted terrain.
-    for(const x of [-290,290])this.line(g,[x,-380,x,385],'#A8DADE13',1);
+    for(let i=0;i<46;i++){
+      const t=(i/46+travel/1800)%1,y=520-965*t*t,w=6+43*t;
+      this.line(g,[-w,y,w,y],'#133132B5',3+3*t);
+      this.line(g,[-w,y+2,w,y+2],'#D5C09760',1);
+    }
+    for(let i=0;i<10;i++){
+      const side=i%2?1:-1,x=side*(85+(i*47)%170),t=((this.lowMotion?0:this.visualTime)*.22+i*.37)%1,y=330-i*66;
+      g.strokeColor=new Color(233,222,175,Math.round((1-t)*35));g.lineWidth=1;
+      g.ellipse(x,y,10+t*20,2+t*4);g.stroke();
+    }
   }
   private car(g:Graphics,y:number) {
     this.rect(g,-51,y-55,108,114,'#102025',14);
@@ -643,7 +890,7 @@ export class Game extends Component {
     const ids=new Set(m.enemies.map(e=>e.id));
     for(const [id,n]of this.enemySprites)if(!ids.has(id)){n.destroy();this.enemySprites.delete(id);}
     for(const e of m.enemies){
-      const size=e.kind===3?78:e.kind===2||e.kind>=6?46:35;
+      const size=e.kind===3?94:e.kind===2||e.kind>=6?60:49;
       this.circle(g,e.x+3,e.y-5,size*.42,'#17162399');
       if((e.slow??0)>0){g.strokeColor=new Color('#8ADDEB88');g.lineWidth=2;g.circle(e.x,e.y,size*.58);g.stroke();}
       if(e.freeze>0){this.polygon(a,[e.x,e.y+size*.7,e.x+size*.55,e.y,e.x,e.y-size*.7,e.x-size*.55,e.y],'#87D9EF66');
@@ -654,11 +901,16 @@ export class Game extends Component {
       }
       const enemyFrame=this.enemyFrames.get(e.kind)||this.zombieFrame;
       if(enemyFrame){
-        let n=this.enemySprites.get(e.id);if(!n){n=this.sprite('Enemy',enemyFrame,size*1.5,size*1.5,this.enemyLayer);this.enemySprites.set(e.id,n);}
+        let n=this.enemySprites.get(e.id);if(!n){
+          const ratio=enemyFrame.rect.width/enemyFrame.rect.height;
+          n=this.sprite(ENEMY_LOOKS[e.kind].name,enemyFrame,size*1.5*Math.min(1,ratio),size*1.5/Math.max(1,ratio),this.enemyLayer);this.enemySprites.set(e.id,n);
+        }
         const gait=e.freeze>0?0:Math.sin(this.visualTime*12+e.id*2.4);
-        n.setPosition(e.x,e.y+gait*1.6,0);n.angle=(Math.atan2(-e.y,-e.x)+Math.PI/2)*180/Math.PI+gait*5;
-        n.setScale(e.flash>0?1.1:1,e.flash>0?1.1:1,1);
-        n.getComponent(Sprite)!.color=new Color(e.flash>0?'#FFF4CF':e.freeze>0?'#A4E6F2':(e.slow??0)>0?'#BFDAE9':e.kind===3?'#F5906B':e.kind===2?'#B9C4D0':e.kind===4?'#FFAF62':e.kind===5?'#B394D9':'#FFFFFF');
+        const recoil=this.lowMotion?0:Math.sin(Math.min(1,e.flash/.1)*Math.PI)*3;
+        n.setPosition(e.x+Math.sign(e.x)*recoil,e.y+gait*1.6,0);n.angle=this.lastLightEnemyReady?gait*2:(Math.atan2(-180-e.y,-e.x)+Math.PI/2)*180/Math.PI+gait*5;
+        const squash=this.lowMotion?0:Math.min(1,e.flash/.1);
+        n.setScale(1+squash*.12,1-squash*.055,1);
+        n.getComponent(Sprite)!.color=new Color(e.flash>0?'#FFF0CD':e.freeze>0?'#A4E6F2':(e.slow??0)>0?'#BFDAE9':'#FFFFFF');
       }else this.circle(g,e.x,e.y,size*.4,e.kind===4?C.gold:C.muted);
       if(e.kind===2||e.kind===4||e.kind===5){
         const color=e.kind===2?'#D2DFE5':e.kind===4?'#FFA552':'#C9A1ED';
@@ -673,25 +925,48 @@ export class Game extends Component {
       if((e.corrosion??0)>0)this.paintRect(a,e.x-14,e.y-19,28,7,'#C9BE86B0');
     }
     if(!this.loco&&(this.entranceRemaining>0||m.time<1.4)){this.rect(g,-35,210,70,92,'#5A7772',12);this.rect(g,-28,256,56,28,'#152E35',6);}
+    this.drawBuildAura(g);
+    const engine=m.engineState;
+    if(engine){
+      const accent=ENGINES[engine.id].color;
+      const ready=1-engine.cooldown/engine.chargeTime;
+      this.line(d,[-26,108,26,108],'#171B2B',4);
+      this.line(d,[-26,108,-26+52*ready,108],accent,2);
+      if(this.engineFlash>0){
+        const radius=55+(this.lowMotion?0:(1-this.engineFlash/.8)*35);
+        d.strokeColor=new Color(accent+Math.round(this.engineFlash/.8*170).toString(16).padStart(2,'0'));d.lineWidth=2.5;d.circle(0,188,radius);d.stroke();
+      }
+    }
     const carIds=new Set(m.slots.map((c,i)=>c?c.id:-i-1));
     for(const [id,n]of this.carArt)if(!carIds.has(id)){n.destroy();this.carArt.delete(id);}
     for(const [id,n]of this.weaponSprites)if(!carIds.has(id)){n.destroy();this.weaponSprites.delete(id);}
     m.slots.forEach((car,i)=>{
       const y=this.slotY[i];
-      if(!this.hullFrame)this.car(g,y);
-      const hull=this.hullFrame||this.carriageFrame;
+      const themed=this.chassisMaterial?this.chassisFrames.get(m.runLoadout?.engine||this.garage.loadout.engine):undefined;
+      if(!this.hullFrame&&!themed)this.car(g,y);
+      const hull=themed||this.hullFrame||this.carriageFrame;
       const carId=car?car.id:-i-1;
-      if(hull){let n=this.carArt.get(carId);if(!n){n=this.sprite('Carriage',hull,170,144,this.trainLayer);this.carArt.set(carId,n);}n.getComponent(Sprite)!.spriteFrame=hull;n.setPosition(0,y,0);n.getComponent(Sprite)!.color=new Color(car?'#FFFFFF':'#9E96AD');}
+      if(hull){let n=this.carArt.get(carId);if(!n){n=this.sprite('Carriage',hull,78,106,this.trainLayer);n.setSiblingIndex(0);this.carArt.set(carId,n);}const s=n.getComponent(Sprite)!;s.spriteFrame=hull;s.customMaterial=themed?this.chassisMaterial:this.unitMaterial;n.getComponent(UITransform)!.setAnchorPoint(.5,.5);n.getComponent(UITransform)!.setContentSize(themed?106*hull.rect.width/hull.rect.height:136,themed?106:110);n.setPosition(0,y,0);s.color=new Color(car?'#FFFFFF':'#9E96AD');}
+      // A continuous steel drawbar joins the standardized sockets, including the head.
+      const front=i===0?96:this.slotY[i-1]-47;
+      this.line(d,[0,y+47,0,front],'#131520',8);
+      this.line(d,[-2,y+47,-2,front],'#B0A399',2);
+      this.rect(d,-5,(y+47+front)/2-3,10,6,'#756877',1);
       if(!car){this.line(d,[-8,y,8,y],C.cream,1.5);this.line(d,[0,y-8,0,y+8],C.cream,1.5);return;}
       const angle=m.getRenderAngle(i);
       const accent=CARS[car.type].color;
+      if(car.type==='shield'){
+        const ready=1-Math.min(1,m.getCarCooldown(i)/m.getCarAttackStats(i).interval),points:number[]=[];
+        for(let j=0;j<=24;j++){const q=-Math.PI/2+j/24*Math.PI*2*ready;points.push(Math.cos(q)*43,y+Math.sin(q)*43);}
+        this.line(d,points,C.gold+'C0',2);
+      }
       this.line(d,[-40,y-38,-40,y-27],accent+'99',2);
       const weapon=this.weaponFrames.get(car.type);
       if(weapon){
         let n=this.weaponSprites.get(car.id);
-        if(!n){const size=car.type==='fan'?109:117;n=this.sprite('Weapon',weapon,size,size,this.trainLayer);this.weaponSprites.set(car.id,n);}
+        if(!n){const h=car.type==='fan'?92:car.type==='rail'?124:110;n=this.sprite('Weapon',weapon,h*weapon.rect.width/weapon.rect.height,h,this.trainLayer);this.weaponSprites.set(car.id,n);}n.getComponent(Sprite)!.customMaterial=this.unitMaterial;
         const directional=car.type==='cannon'||car.type==='flame'||car.type==='rail',recoil=directional?Math.sin(Math.min(1,car.flash/.15)*Math.PI*.85)*6:0;
-        n.angle=car.type==='fan'?this.visualTime*420:directional?angle*180/Math.PI-(car.type==='rail'?90:0):0;
+        n.angle=car.type==='fan'?(this.lowMotion?0:Math.sin(this.visualTime*2.5)*7):directional?angle*180/Math.PI-90:0;
         n.setPosition(-Math.cos(angle)*recoil,y-Math.sin(angle)*recoil,0);
         const pulse=directional||car.type==='fan'?1:1+car.flash*.22;n.setScale(pulse,pulse,1);
       }else{this.circle(d,0,y,34,'#0C1D2290');this.drawCarModule(d,car.type,0,y,1,angle);}
@@ -706,17 +981,16 @@ export class Game extends Component {
     });
     for(const link of m.links){
       const y=(this.slotY[link.index]+this.slotY[link.index+1])/2;
-      const known=this.knownRecipes.has(link.recipe.id);
-      this.line(d,[-8,y-7,-8,y+7],known?C.teal:C.gold,4);this.line(d,[8,y-7,8,y+7],known?C.teal:C.gold,4);
-      this.circle(d,0,y,4,known?C.cream:C.gold);
-      const toward=this.slotY[link.driver]>this.slotY[link.support]?1:-1;
-      this.line(d,[-5,y-toward*3,0,y+toward*3,5,y-toward*3],known?C.teal:C.gold,2);
-      const side=toward>0?-67:67,sourceY=this.slotY[link.support],targetY=this.slotY[link.driver];
-      this.line(d,[0,sourceY,side,sourceY,side,targetY,0,targetY],'#7BB5A633',2);
+      const known=this.knownRecipes.has(link.recipe.id),glow=known?C.gold:C.cream;
+      this.line(d,[0,y-12,0,y+12],'#FFE5A02E',18);
+      this.line(d,[0,y-10,0,y+10],glow,4);
+      const direction=link.driver<link.support?1:-1;
+      const pulse=this.lowMotion?0:((this.visualTime*1.8+link.index*.23)%1-.5)*18;
+      this.circle(d,0,y+direction*pulse,3,C.cream);
     }
     for(const p of m.projectiles){
       if(p.beam)continue;
-      const color=p.corrosion?'#D4C78B':p.element==='ice'?'#B5DFEA':p.kind==='pierce'?'#C9BDDB':p.recipeId==='cannon-prism'?'#D9B5EB':p.element==='fire'?'#E9B191':p.element==='electric'?C.teal:C.gold;
+      const color=p.corrosion?'#D4C78B':p.element==='ice'?'#B5DFEA':p.kind==='pierce'?'#F1D594':p.recipeId==='cannon-prism'?'#FFF0C5':p.element==='fire'?'#E9B191':p.element==='electric'?C.teal:C.gold;
       const length=Math.max(1,Math.hypot(p.dx,p.dy));
       const trail=p.kind==='pierce'?54:p.kind==='shatter'?32:22;
       const angle=Math.atan2(p.dy,p.dx)*180/Math.PI;
@@ -725,7 +999,7 @@ export class Game extends Component {
         this.artEffect(0,p.x-dx*58,p.y-dy*58,156,13,angle,.8,'#B3DEEA');
         this.line(a,[p.x-dx*112,p.y-dy*112,p.x+dx*7,p.y+dy*7],'#A8DADE66',5);
         this.line(a,[p.x-dx*70,p.y-dy*70,p.x+dx*7,p.y+dy*7],'#EFF4E5',1.8);
-        for(const side of[-1,1])this.line(a,[p.x-dx*76-dy*side*5,p.y-dy*76+dx*side*5,p.x-dx*32-dy*side*4,p.y-dy*32+dx*side*4],'#C0B2DB88',1);
+        for(const side of[-1,1])this.line(a,[p.x-dx*76-dy*side*5,p.y-dy*76+dx*side*5,p.x-dx*32-dy*side*4,p.y-dy*32+dx*side*4],'#E5C17D88',1);
         continue;
       }
       if(p.kind==='cannon'){
@@ -767,17 +1041,17 @@ export class Game extends Component {
           this.circle(a,x,y,2,'#D2F2E5');
         }
         const bloom=Math.min(1,v.age/.22),pulse=1+Math.sin(spin*1.3)*.09;
-        if(this.artEffect(6,v.x,v.y,v.radius*2.2*pulse*bloom,v.radius*1.7/pulse*bloom,spin*26,.42*fade)){
-          this.artEffect(6,v.x,v.y,v.radius*1.3*bloom,v.radius*1.3*bloom,-spin*43,.28*fade);
+        if(this.artEffect(7,v.x,v.y,v.radius*2.2*pulse*bloom,v.radius*1.7/pulse*bloom,spin*26,.42*fade)){
+          this.artEffect(7,v.x,v.y,v.radius*1.3*bloom,v.radius*1.3*bloom,-spin*43,.28*fade);
           for(let j=0;j<4;j++){
             const q=spin*1.4+j*Math.PI/2,r=v.radius*(.55+.2*Math.sin(q*1.7));
-            this.ribbon(a,v.x,v.y,q,r,3,spin+j,'#C0B2DB99');
+            this.ribbon(a,v.x,v.y,q,r,3,spin+j,'#E5C17D99');
             this.circle(a,v.x+Math.cos(q)*r,v.y+Math.sin(q)*r,2,C.teal);
           }
           continue;
         }
         a.strokeColor=new Color('#77E9E3');a.lineWidth=3;a.circle(v.x,v.y,v.radius*.75);a.stroke();
-        a.strokeColor=new Color('#BDABEF');a.lineWidth=2;a.circle(v.x,v.y,v.radius*.5);a.stroke();
+        a.strokeColor=new Color('#E5C17D');a.lineWidth=2;a.circle(v.x,v.y,v.radius*.5);a.stroke();
         for(let i=0;i<4;i++){
           const q=spin+i*Math.PI/2,r=v.radius*.8;
           this.line(a,[v.x+Math.cos(q)*r,v.y+Math.sin(q)*r,v.x+Math.cos(q+.5)*r*.4,v.y+Math.sin(q+.5)*r*.4,v.x,v.y],'#ACFFF0',3);
@@ -789,6 +1063,21 @@ export class Game extends Component {
         const grow=(.7+.3*Math.min(1,v.age/.12))*(.85+.15*fade);n.setScale(grow,grow,1);
         n.getComponent(Sprite)!.color=new Color(255,241,210,Math.round(185*fade));
       }else this.drawVortex(a,v.x,v.y,v.radius,spin,Math.atan2(v.dy,v.dx),fade);
+    }
+  }
+  /**
+   * A low-cost, animated signature for the active build.  The train remains
+   * readable because the marks are painted onto the ground pass before cars
+   * and weapons are drawn; the motion communicates build state without adding
+   * another HUD-only label.
+   */
+  private drawBuildAura(g:Graphics) {
+    if(!this.model.links.length)return;
+    const pulse=this.lowMotion?1:1+Math.sin(this.visualTime*2)*.06;
+    const connected=new Set<number>();for(const link of this.model.links){connected.add(link.driver);connected.add(link.support);}
+    for(const i of connected){
+      this.circle(g,0,this.slotY[i],39*pulse,'#F3C16A10');
+      this.circle(g,0,this.slotY[i],26*pulse,'#FFE4A914');
     }
   }
   private drawCarModule(g:Graphics,type:CarType,x:number,y:number,scale:number,angle=0) {
@@ -1014,10 +1303,34 @@ export class Game extends Component {
   }
   private drawEffects() {
     const g=this.fx;g.clear();
+    // The barrier is a persistent world-space state, not just a recharge flash.
+    if(this.model.shieldHp>0){
+      const ratio=this.model.shieldHp/this.model.maxShield;
+      for(const y of [166,...this.slotY]){
+        const alpha=Math.round(45+ratio*95).toString(16).padStart(2,'0');
+        for(const side of [-1,1])this.line(g,[side*57,y+42,side*65,y+25,side*65,y-25,side*57,y-42],'#B5D3BE'+alpha,1.5+ratio);
+      }
+    }
     for(const e of this.supportEffects){
       const t=1-e.life/e.max;
+      if(e.type==='ink-impact'||e.type==='shield-impact'){
+        const color=e.color||C.gold,fade=Math.pow(1-t,1.5),alpha=Math.round(fade*230).toString(16).padStart(2,'0');
+        const grow=1-Math.pow(1-t,3),radius=e.size*(.25+grow*.75);
+        if(e.type==='shield-impact'){
+          const points:number[]=[];for(let i=0;i<=12;i++){const angle=i/12*Math.PI*1.7;points.push(e.x+Math.cos(angle)*radius,e.y+Math.sin(angle)*radius*.8);}
+          this.line(g,points,color+alpha,2.5);
+        }else{
+          const angle=Math.atan2(e.dy,e.dx)+.4;
+          for(let i=0;i<4;i++){
+            const q=angle+i*Math.PI*.5,r=radius*(i%2?.55:1);
+            this.polygon(g,[e.x+Math.cos(q)*3,e.y+Math.sin(q)*3,e.x+Math.cos(q+.15)*r*.55,e.y+Math.sin(q+.15)*r*.55,e.x+Math.cos(q)*r,e.y+Math.sin(q)*r,e.x+Math.cos(q-.15)*r*.55,e.y+Math.sin(q-.15)*r*.55],color+alpha);
+          }
+          if(t<.45)this.circle(g,e.x,e.y,3*(1-t),C.cream+alpha);
+        }
+        continue;
+      }
       if(e.type==='rail-beam'){
-        const fade=Math.pow(1-t,1.8),color=e.recipeId?.includes('cryo')?'#B4DDEB':e.recipeId?.includes('acid')?'#D3D9A5':'#B4CDD9';
+        const fade=Math.pow(1-t,1.8),color=e.recipeId?.includes('cryo')?'#B4DDEB':e.recipeId?.includes('acid')?'#D3D9A5':'#F4CC78';
         const length=Math.max(1,Math.hypot(e.dx,e.dy)),angle=Math.atan2(e.dy,e.dx);
         const width=(t<.12?1+t*5:1.6-t)*Math.max(3,e.size*.45),alpha=Math.round(fade*210).toString(16).padStart(2,'0');
         this.line(g,[e.x,e.y,e.x+e.dx,e.y+e.dy],color+Math.round(fade*52).toString(16).padStart(2,'0'),width*3.6);
@@ -1028,8 +1341,26 @@ export class Game extends Component {
         const ex=e.x+e.dx,ey=e.y+e.dy;
         this.artEffect(5,ex,ey,24+width*3,18+width*2,angle*180/Math.PI,fade*.7,color);
         this.artEffect(5,e.x,e.y,18+width*2,14+width,angle*180/Math.PI+180,fade*.45,color);
+        // Paired rails and expanding muzzle rings distinguish this instant
+        // piercing discharge from the travelling cannon shell.
+        const nx=-Math.sin(angle),ny=Math.cos(angle),offset=5+9*t;
+        for(const side of [-1,1])this.line(g,[e.x+nx*offset*side,e.y+ny*offset*side,ex+nx*offset*side,ey+ny*offset*side],color+alpha,Math.max(.5,2*(1-t)));
+        for(let j=0;j<3;j++){
+          const distance=42+j*55+t*30,cx=e.x+Math.cos(angle)*distance,cy=e.y+Math.sin(angle)*distance,r=10+8*t-j*2,points:number[]=[];
+          for(let k=0;k<=16;k++){const q=k/16*Math.PI*2;points.push(cx+nx*Math.cos(q)*r+Math.cos(angle)*Math.sin(q)*r*.3,cy+ny*Math.cos(q)*r+Math.sin(angle)*Math.sin(q)*r*.3);}
+          this.line(g,points,color+alpha,1.4*(1-t)+.4);
+        }
+      }else if(e.type==='shield-hit'||e.type==='shield-break'){
+        const broken=e.type==='shield-break',alpha=Math.round((1-t)*220).toString(16).padStart(2,'0');
+        for(const y of [166,...this.slotY])for(const side of [-1,1]){
+          const x=side*(65+(broken?32:9)*t),shift=broken?t*28:0;
+          this.line(g,[x,y+25-shift,x+side*7,y+9-shift,x,y-9-shift],(broken?C.gold:C.cream)+alpha,3*(1-t)+.5);
+        }
       }else if(e.type==='train-shield'){
-        for(const y of this.slotY){const fade=1-t,w=56+8*t;
+        const radius=22+65*t,points:number[]=[];
+        for(let i=0;i<=32;i++){const q=i/32*Math.PI*2;points.push(e.x+Math.cos(q)*radius,e.y+Math.sin(q)*radius*.65);}
+        this.line(g,points,C.gold+Math.round((1-t)*220).toString(16).padStart(2,'0'),3*(1-t)+.5);
+        for(const y of [166,...this.slotY]){const arrival=Math.abs(y-e.y)/700,fade=Math.max(0,1-Math.abs(t-arrival)*2),w=56+8*t;
           this.line(g,[-w,y+38,-w-8,y+18,-w-8,y-24,-w,y-38],'#B9DCE2'+Math.round(fade*190).toString(16).padStart(2,'0'),2);
           this.line(g,[w,y+38,w+8,y+18,w+8,y-24,w,y-38],'#B9DCE2'+Math.round(fade*190).toString(16).padStart(2,'0'),2);}
       }else if(e.type==='flame'){
@@ -1061,6 +1392,11 @@ export class Game extends Component {
         }
         const charge=1-Math.min(1,t/.35);
         this.artEffect(4,e.x+e.dx,e.y+e.dy,46+charge*60,64+charge*55,-this.visualTime*45,Math.sin(Math.PI*t)*.72);
+      }else if(e.type==='wind-impact'){
+        const length=Math.max(1,Math.hypot(e.dx,e.dy)),dx=e.dx/length,dy=e.dy/length;
+        const reach=14+36*t,alpha=Math.round((1-t)*220).toString(16).padStart(2,'0');
+        for(const side of[-1,1])this.line(g,[e.x-dx*12-dy*side*reach,e.y-dy*12+dx*side*reach,e.x+dx*10,e.y+dy*10,e.x+dx*24-dy*side*reach*.5,e.y+dy*24+dx*side*reach*.5],'#BDE7E0'+alpha,2);
+        this.artEffect(0,e.x,e.y,62+25*t,23,Math.atan2(dy,dx)*180/Math.PI,(1-t)*.7,'#C5EBDE');
       }else if(e.type==='thermal-shot'){
         this.line(g,[e.x,e.y,e.x+e.dx,e.y+e.dy],'#FF814E99',8*(1-t)+2);
         this.line(g,[e.x,e.y,e.x+e.dx,e.y+e.dy],'#FFEACD',2);
@@ -1119,25 +1455,57 @@ export class Game extends Component {
       g.moveTo(p.x-r,p.y-r*.2);g.lineTo(p.x+r*.55,p.y+r*.7);g.lineTo(p.x+r*.8,p.y-r*.45);g.lineTo(p.x-r*.6,p.y-r*.6);g.close();g.fill();
     }
     let digitUsed=0;
-    for(const number of this.damageNumbers.items){
+    const occupied:{x:number;y:number;w:number;h:number}[]=[];
+    const priority={incoming:0,heavy:1,shield:2,normal:3,tick:4};
+    const shownChannels=new Set<string>(),shownKinds={incoming:0,heavy:0,shield:0,normal:0,tick:0};
+    const limits={incoming:2,heavy:4,shield:2,normal:6,tick:4};
+    for(const number of [...this.damageNumbers.items].sort((a,b)=>priority[a.kind]-priority[b.kind]||a.age-b.age)){
       if(!this.digitFrames.length)break;
-      const text=(number.incoming?'-':'')+String(Number(number.amount.toFixed(1)));
-      const age=number.age,pop=this.lowMotion?1:age<.09?.65+.53*(1-Math.pow(1-age/.09,3)):age<.2?1.18-.18*(1-Math.pow(1-(age-.09)/.11,2)):1;
-      const size=(number.incoming?58:number.amount>=40?56:46)*pop;
-      const fade=Math.min(1,age/.035)*Math.pow(Math.min(1,number.life/.26),1.5);
-      const rise=this.lowMotion?0:18*(1-Math.exp(-age*12))+Math.max(0,age-.2)*12;
-      const x=number.x+(this.lowMotion?0:number.drift*age),y=number.y+rise;
-      const advance=(char:string)=>char==='.'?size*.15:char==='-'?size*.25:size*.4;
-      const width=[...text].reduce((sum,c)=>sum+advance(c),0);
+      if(occupied.length>=14)break;
+      if(shownChannels.has(number.key)||shownKinds[number.kind]>=limits[number.kind])continue;
+      const text=(number.incoming?'-':'')+String(Number(number.amount.toFixed(number.amount<10?1:0)));
+      const pose=damageNumberPresentation(number),heavy=number.kind==='heavy';
+      const incoming=number.kind==='incoming',tick=number.kind==='tick';
+      const size=(incoming?40:heavy?48:tick?30:number.shield?34:36)*(this.lowMotion?1:pose.scale);
+      const fade=pose.alpha;
+      const rise=this.lowMotion?0:pose.rise;
+      let y=number.y+rise;
+      const advance=(char:string)=>char==='.'?size*.34:char==='-'?size*.65:char==='1'?size*.52:size*.72;
+      // Array.from preserves characters under Creator's loose string-spread transform.
+      const width=Array.from(text).reduce((sum,c)=>sum+advance(c),0);
+      let x=Math.max(-310+width/2,Math.min(310-width/2,number.x+(this.lowMotion?0:pose.offsetX)));
+      // Reserve full slanted glyph extents and the adjacent semantic mark, not just advances.
+      const idealX=x,idealY=y,h=size,w=width+size*.5;
+      let placed=false;
+      for(let attempt=0;attempt<18;attempt++){
+        const row=Math.floor(attempt/3),side=attempt%3===0?0:attempt%3===1?-1:1;
+        x=Math.max(-310+w/2,Math.min(310-w/2,idealX+side*(w+12)));
+        y=Math.max(-392+h/2,Math.min(195-h/2,idealY-row*(h+10)));
+        if(!occupied.some(p=>Math.abs(p.x-x)<(p.w+w)/2+12&&Math.abs(p.y-y)<(p.h+h)/2+10)){placed=true;break;}
+      }
+      // Dense low-priority floats yield space instead of obscuring higher-priority feedback.
+      if(!placed)continue;
+      occupied.push({x,y,w,h});
+      shownChannels.add(number.key);shownKinds[number.kind]++;
+      const tilt=this.lowMotion?0:pose.tilt;
+      const alpha=Math.round(fade*255).toString(16).padStart(2,'0');
+      if(incoming)this.line(g,[x-width/2,y-23,x+width/2,y-23],'#F18788'+alpha,2);
+      if(tick)this.circle(g,x-width/2-6,y,1.5,'#D3C0EA'+alpha);
+      if(heavy&&number.age<.24){
+        const strength=(1-number.age/.24)*fade;
+        const pigment=number.color+Math.round(90*strength).toString(16).padStart(2,'0');
+        this.line(g,[x-width*.55-8,y-13,x+width*.5+12,y+14],pigment,1.5);
+        if(!this.lowMotion)this.line(g,[x+width*.5+3,y+18,x+width*.5+16+number.age*30,y+25],pigment,1);
+      }
       let cursor=-width/2;
       for(const char of text){
-        const frame=this.digitFrames['0123456789.-'.indexOf(char)];if(!frame)continue;
+        const frame=this.digitFrames[pose.atlasRow*12+'0123456789.-'.indexOf(char)];if(!frame)continue;
         let node=this.digitSprites[digitUsed++];
         if(!node){node=this.sprite('Damage ink',frame,36,48,this.fx.node);this.digitSprites.push(node);}
-        node.active=true;node.setPosition(x+cursor+advance(char)/2,y,0);node.angle=0;
-        node.getComponent(UITransform)!.setContentSize(size*.75,size);
+        node.active=true;node.setPosition(x+cursor+advance(char)/2,y+(cursor+advance(char)/2)*Math.sin(tilt*Math.PI/180),0);node.angle=tilt;
+        node.getComponent(UITransform)!.setContentSize(size*frame.rect.width/frame.rect.height,size);
         const sprite=node.getComponent(Sprite)!;sprite.spriteFrame=frame;
-        const color=new Color(number.color);color.a=Math.round(255*fade);sprite.color=color;
+        const color=new Color('#FFFFFF');color.a=Math.round(255*fade);sprite.color=color;
         cursor+=advance(char);
       }
       if(number.shield)this.line(g,[x-width/2-16,y+7,x-width/2-6,y+7,x-width/2-7,y-3,x-width/2-11,y-7,x-width/2-16,y-3,x-width/2-16,y+7],number.color+Math.round(fade*255).toString(16).padStart(2,'0'),2);
@@ -1146,71 +1514,69 @@ export class Game extends Component {
   }
   private drawHUD() {
     const g=this.hud,m=this.model;g.clear();
-    const fighting=m.phase==='combat';
-    for(const key of ['hp','shield','kills','stage','form','hint','toast','chain','boss','reorder'])this.labels[key].node.active=fighting;
-    this.paintRect(g,-365,430,730,217,'#26243BD0');this.paintRect(g,-365,-645,730,222,'#26243BD0');
-    // Broken pigment tabs keep the HUD attached to the same paper language as
-    // the workshop cards, while the lower opacity lets the terrain breathe.
-    this.polygon(g,[-360,640,-220,640,-187,619,-241,610,-295,570,-360,566],'#6D546F3D');
-    this.polygon(g,[130,-640,360,-640,360,-577,309,-565,275,-590,210,-595],'#6D546F32');
-    this.line(g,[-310,512,310,512],'#C0B2DB55',1);
-    this.line(g,[173,548,295,548],'#A8DADE66',1);
-    this.line(g,[-303,468,-244,466,-198,469],'#E6C9B33D',1.5);
-    this.line(g,[194,-593,256,-596,310,-592],'#E6C9B32B',1.5);
-    this.paintRect(g,-315,439,372,18,'#A5C4C5');
-    this.rect(g,-312,442,366,12,'#252738');
-    this.rect(g,-312,442,366*Math.max(0,m.hp/m.maxHp),12,m.hp>30?C.teal:C.red);
-    for(let i=1;i<10;i++)this.rect(g,-312+i*36.6,442,2,12,'#25273888');
-    this.paintRect(g,75,439,240,18,'#A998C6');
-    this.rect(g,78,442,234,12,'#292336');
-    this.rect(g,78,442,234*Math.min(1,m.shieldHp/m.maxShield),12,'#C3B4E4');
-    for(let i=1;i<4;i++)this.rect(g,78+i*58.5,442,2,12,'#29233688');
-    this.line(g,[-310,-510,310,-510],'#C0B2DB44',1);
-    this.rect(g,-312,-527,624,3,'#4A435E');
-    this.rect(g,-312,-527,624*(Math.min(1,m.scrap/m.nextScrap)),3+this.scrapPulse*3,this.scrapPulse>0?C.cream:C.gold);
-    this.labels.hp.string=`装甲 ${Math.ceil(m.hp)}/${m.maxHp}`;this.labels.kills.string=`击破 ${m.kills}`;
-    this.labels.shield.string=`护盾 ${Math.ceil(m.shieldHp)}/${m.maxShield}`;
-    const elapsed=Math.floor(m.time+.00001);
-    this.labels.time.string=`${Math.floor(elapsed/60).toString().padStart(2,'0')}:${(elapsed%60).toString().padStart(2,'0')}`;
-    this.labels.stage.string=this.entranceRemaining>0?'列车驶入 · 准备迎敌':`第 ${m.wave} 波 · ${m.encounterBeat}`;
-    this.labels.form.string=m.phase==='menu'?'进攻  /  增益  /  减益':m.slots.map(c=>c?CARS[c.type].name.replace('车',''):'空位').join(' — ');
-    this.labels.hint.string=m.scrap>=m.nextScrap&&m.supplyWait>0
-      ? `补给整备 ${Math.ceil(m.supplyWait)}秒 · ${m.links.length} 条联动`
-      : `废料 ${m.scrap}/${m.nextScrap} · ${m.links.length} 条联动`;
+    const fighting=m.phase==='combat',power=m.buildPower,burst=power.overdrive;
+    if(this.hudVeil)this.hudVeil.active=false;
+    for(const key of ['hp','shield','kills','build','milestone','power','form','hint','toast','chain','boss','reorder','tag','time'])this.labels[key].node.active=fighting;
+    this.labels.stage.node.active=false;this.labels.brand.node.active=!this.lastLightTitle&&m.phase!=='menu';
+    if(this.lastLightTitle){this.lastLightTitle.active=m.phase!=='menu';this.lastLightTitle.setPosition(-236,576,0);this.lastLightTitle.getComponent(UITransform)!.setContentSize(220,90);this.lastLightTitle.getComponent(Sprite)!.customMaterial=this.chassisMaterial;}
+    if(this.lastLightTicket){this.lastLightTicket.active=fighting;this.lastLightTicket.setPosition(0,-493,0);this.lastLightTicket.getComponent(UITransform)!.setContentSize(704,218);this.lastLightTicket.getComponent(Sprite)!.customMaterial=this.chassisMaterial;}
+    if(this.lastLightReorder){this.lastLightReorder.active=fighting;this.lastLightReorder.getComponent(Sprite)!.customMaterial=this.chassisMaterial;}
+    this.labels.brand.string='末日列车';this.labels.brand.node.setPosition(-309,570,0);this.labels.brand.fontSize=40;
+    // Deliberately local information panels leave the sunset and the center lane open.
     if(fighting){
-      this.paintRect(g,122,-514,197,64,'#61687A78');
-      this.line(g,[135,-513,304,-513],C.teal,2);
-      this.line(g,[125,-475,132,-483,125,-491],C.teal,2);
-      this.line(g,[310,-475,303,-483,310,-491],C.teal,2);
+      this.rect(g,-324,348,232,173,'#0C272AB8',1);
+      this.rect(g,-308,492,217,31,'#A83D2BEA',1);
+      this.rect(g,-307,408,206,5,'#F1DEB633',0);
+      this.rect(g,-307,408,206*Math.max(0,m.hp/m.maxHp),5,m.hp>30?C.cream:C.red,0);
     }
-    this.labels.footer.string=`声音 ${this.sound?'开':'关'}`;this.labels.motion.string=`镜头 ${this.lowMotion?'关':'开'}`;
-    this.labels.speed.string=`倍速 ×${this.debugSpeed}`;
-    this.labels.numbers.string=`跳字 ${this.showDamage?'开':'关'}`;
-    this.labels.tag.string=this.debugSpeed===1?'余晖防线 / 无尽远征':`无尽远征 / 调试 ×${this.debugSpeed}`;
-    this.labels.pause.string=m.phase==='paused'?'继续 ▶':'暂停 Ⅱ';
-    for(let i=0;i<5;i++)this.line(g,[-347+i*144,-606,-229+i*144,-606],i===2?'#A8DADE99':'#C0B2DB44',1);
-    const boss=m.boss;
-    this.labels.tag.node.active=!boss&&fighting;
-    this.labels.boss.node.setPosition(0,531,0);
-    this.labels.boss.fontSize=22;this.labels.boss.color=new Color(C.cream);
-    this.labels.boss.fontSize=20;
-    this.labels.boss.string=boss?`破阵者 ${Math.ceil(boss.hp)} / ${Math.ceil(boss.maxHp)} · 冲击 ${Math.max(1,Math.ceil((1-m.bossCharge)*m.bossAttackInterval))}秒`:'';
-    if(boss&&fighting){this.rect(g,-290,511,580,5,'#514156',2);this.rect(g,-290,511,580*Math.max(0,boss.hp/boss.maxHp),5,C.red,2);}
-    this.labels.toast.node.setPosition(0,375,0);
-    this.labels.toast.string=this.toastLife>0?this.toastText:'';
-    this.labels.chain.string=this.chain>=4&&m.phase==='combat'&&!boss?`${this.chain} 连破`:'';
-    if(m.phase==='combat'&&m.hp<30){
-      const alpha=Math.round(24+18*(1+Math.sin(this.visualTime*5)));
-      const warning=new Color(244,120,95,alpha);g.strokeColor=warning;g.lineWidth=8;g.rect(-349,-414,698,840);g.stroke();
-    }
+    const elapsed=Math.floor(m.time+.00001);
+    this.labels.time.string=Math.floor(elapsed/60).toString().padStart(2,'0')+':'+(elapsed%60).toString().padStart(2,'0');
+    this.labels.time.node.setPosition(-217,457,0);this.labels.time.node.getComponent(UITransform)!.setContentSize(204,67);this.labels.time.fontSize=50;this.labels.time.font=null;this.labels.time.useSystemFont=true;this.labels.time.fontFamily='Georgia';this.labels.time.color=new Color(C.cream);
+    this.labels.tag.node.setPosition(-298,508,0);this.labels.tag.node.getComponent(UITransform)!.setContentSize(217,32);this.labels.tag.fontSize=20;
+    this.labels.tag.string=(m.worldState.id==='city'?'雨巷':m.worldState.name)+' / 第 '+String(m.wave).padStart(2,'0')+' 波';this.labels.tag.color=new Color(C.cream);
+    this.labels.hp.node.setPosition(-307,385,0);this.labels.hp.fontSize=20;this.labels.hp.string='装甲 '+Math.ceil(m.hp)+' / '+m.maxHp;
+    this.labels.shield.node.setPosition(-211,357,0);this.labels.shield.fontSize=17;this.labels.shield.color=new Color(C.teal);this.labels.shield.string='护盾 '+Math.ceil(m.shieldHp)+' / '+m.maxShield;
+    this.labels.kills.node.setPosition(260,545,0);this.labels.kills.fontSize=18;this.labels.kills.string='击破 '+m.kills;
+    const xp=m.carRewardProgress;
+    this.labels.form.node.active=fighting;this.labels.milestone.node.active=fighting;
+    this.labels.form.node.setPosition(182,502,0);this.labels.form.fontSize=17;this.labels.form.color=new Color(C.cream);this.labels.form.string='车厢经验 '+xp.current+' / '+xp.required;
+    this.labels.milestone.node.setPosition(182,457,0);this.labels.milestone.fontSize=17;this.labels.milestone.color=new Color(C.gold);this.labels.milestone.string='词条整备 '+Math.ceil(m.modifierWait)+'秒';
+    if(fighting){this.rect(g,82,483,205,4,C.cream+'33');this.rect(g,82,483,205*xp.ratio,4,C.gold);}
+    this.labels.build.node.setPosition(-292,-461,0);this.labels.build.fontSize=18;this.labels.build.color=new Color(C.gold);this.labels.build.string=m.links.length+' 条光路 / '+m.buildIdentity;
+    this.labels.build.node.getComponent(UITransform)!.setContentSize(296,31);
+    this.labels.power.node.setPosition(157,-461,0);this.labels.power.fontSize=17;this.labels.power.color=new Color(C.cream);this.labels.power.node.getComponent(UITransform)!.setContentSize(265,31);
+    this.labels.power.string=burst.active?burst.name+' · '+burst.remaining.toFixed(1)+'秒':burst.eligible?burst.name+' · '+Math.ceil(burst.cooldown)+'秒':power.summary;
+    this.labels.reorder.node.setPosition(0,-511,0);this.labels.reorder.node.getComponent(UITransform)!.setContentSize(352,66);this.labels.reorder.fontSize=33;this.labels.reorder.string='调整编组';this.labels.reorder.color=new Color(C.cream);
+    if(fighting){
+      if(!this.lastLightReorder)this.polygon(g,[-190,-542,-169,-477,190,-477,169,-542],'#AC3D2DF5');
+      const frames=m.slots.map(car=>car?this.weaponFrames.get(car.type):undefined);
+      for(let i=0;i<5;i++){
+        const x=-236+i*118,y=-433;
+        if(i<4)this.line(g,[x+24,y-12,x+94,y-12],m.links.some(l=>l.index===i)?'#F8DB88':'#8C967355',2);
+        this.circle(g,x,y-12,3,m.slots[i]?C.gold:'#819382');
+        const frame=frames[i];let n=this.lastLightFooterIcons[i];
+        if(frame&&!n){n=this.sprite('Ticket module',frame,42,52,this.node);n.setSiblingIndex(this.overlayNode.getSiblingIndex());this.lastLightFooterIcons[i]=n;}
+        if(n){n.active=!!frame;if(frame){n.getComponent(Sprite)!.spriteFrame=frame;n.getComponent(Sprite)!.customMaterial=this.unitMaterial;n.getComponent(UITransform)!.setAnchorPoint(.5,.5);n.getComponent(UITransform)!.setContentSize(47*frame.rect.width/frame.rect.height,47);n.setPosition(x,y+13,0);}}
+      }
+    }else for(const n of this.lastLightFooterIcons)if(n)n.active=false;
+    this.labels.hint.node.setPosition(-294,-564,0);this.labels.hint.fontSize=16;this.labels.hint.node.getComponent(UITransform)!.setContentSize(575,27);
+    this.labels.hint.string='击破积累经验选车厢 · 每30秒 / 击败精英选词条';
+    this.rect(g,-360,-640,720,58,'#0B2429F0');this.line(g,[-320,-583,320,-583],'#D4BB803D',1);
+    for(const [i,key]of ['footer','motion','speed','numbers','pause'].entries()){this.labels[key].node.setPosition(-288+i*144,-612,0);this.labels[key].fontSize=17;}
+    this.labels.footer.string='声音 '+(this.sound?'开':'关');this.labels.motion.string='动态 '+(this.lowMotion?'静':'开');this.labels.speed.string='倍速 ×'+this.debugSpeed;this.labels.numbers.string='跳字 '+(this.showDamage?'开':'关');this.labels.pause.string=m.phase==='paused'?'继续 ▶':'暂停 Ⅱ';
+    this.labels.toast.node.setPosition(0,-353,0);this.labels.toast.fontSize=19;this.labels.toast.string=this.toastLife>0?this.toastText:'';
+    if(fighting&&this.toastLife>0)this.rect(g,-275,-372,550,36,'#102B2DDB',1);
+    this.labels.windLesson.node.active=fighting&&this.windLessonLife>0;this.labels.windLesson.node.setPosition(0,-380,0);this.labels.windLesson.fontSize=18;this.labels.windLesson.string=this.windLessonText;
+    this.labels.chain.node.setPosition(246,412,0);this.labels.chain.fontSize=24;this.labels.chain.string=this.chain>=4?this.chain+' 连破':'';
+    this.labels.boss.node.setPosition(120,490,0);this.labels.boss.fontSize=20;this.labels.boss.node.getComponent(UITransform)!.setContentSize(360,38);this.labels.boss.string=m.boss?'执伞者 '+Math.ceil(m.boss.hp)+' / '+Math.ceil(m.boss.maxHp):'';
+    if(m.boss&&fighting){this.rect(g,12,465,298,4,'#142C2F');this.rect(g,12,465,298*Math.max(0,m.boss.hp/m.boss.maxHp),4,C.red);}
   }
   private button(text:string,x:number,y:number,w:number,h:number,action:()=>void,accent=true) {
-    const wash=accent?'#D5B5A4D8':'#443C5768';
-    this.paintRect(this.overlay,x-w/2,y-h/2,w,h,wash);
-    this.line(this.overlay,[x-w/2+18,y-h/2+7,x-w*.12,y-h/2+5,x+w*.13,y-h/2+8],accent?'#5E536C99':'#9A859B77',1.5);
-    this.line(this.overlay,[x-w/2+28,y+h/2-8,x-w*.08,y+h/2-6,x+w*.31,y+h/2-9],accent?'#F3D7C055':'#CBBACF44',1);
-    this.line(this.overlay,[x-w/2+10,y-h/2+18,x-w/2+10,y+h/2-18],accent?'#F4D5BE66':'#A8DADE3D',1);
-    this.label(this.overlayNode,text,x,y+1,28,accent?'#302A40':C.cream,w-30,'center','display');
+    const frame=this.lastLightUi[accent?3:1];
+    if(frame){const n=this.sprite(accent?'Vermilion ticket action':'Railway ticket action',frame,w,h,this.overlayNode);n.setPosition(x,y,0);n.getComponent(Sprite)!.customMaterial=this.chassisMaterial;}
+    else this.rect(this.overlay,x-w/2,y-h/2,w,h,accent?'#A83D2B':'#163639',2);
+    const caption=text.replace(/[→↔]/g,'').trim();
+    this.label(this.overlayNode,caption,x-(accent?8:0),y,26,C.cream,w-58,'center','display');
     this.hitAreas.push({x,y,w,h,action});
   }
   private slotClick(index:number) {
@@ -1226,30 +1592,32 @@ export class Game extends Component {
    * coloured rectangle.  The irregular paper medallion gives every sprite a
    * common visual language while leaving the hand-painted silhouette visible.
    */
+  private workshopCar(type:CarType,x:number,y:number,size:number,key:string) {
+    let motion=this.workshopPositions.get(key);
+    if(!motion){motion={x:key==='pending'&&!this.lowMotion?-190:x,y:key==='pending'&&!this.lowMotion?252:y,targetX:x,targetY:y,nodes:[]};this.workshopPositions.set(key,motion);}
+    motion.targetX=x;motion.targetY=y;
+    const count=this.overlayNode.children.length;
+    this.cardIcon(type,x,y,size);
+    motion.nodes=this.overlayNode.children.slice(count);
+    for(const node of motion.nodes)node.setPosition(motion.x,motion.y,0);
+  }
   private cardIcon(type:CarType,x:number,y:number,size:number) {
-    const accent=CARS[type].color;
-    this.paintRect(this.overlay,x-size*.48,y-size*.48,size*.96,size*.96,'#1C2633B8');
-    this.circle(this.overlay,x,y,size*.37,'#111A2690');
-    const g=this.overlay;g.strokeColor=new Color(accent+'B0');g.lineWidth=Math.max(1.4,size*.018);
-    g.circle(x,y,size*.39);g.stroke();
-    this.line(g,[x-size*.39,y+size*.34,x-size*.16,y+size*.39,x+size*.12,y+size*.35],accent+'55',1.5);
-    this.line(g,[x+size*.26,y-size*.37,x+size*.41,y-size*.29],C.cream+'46',1.2);
-    const weapon=this.weaponFrames.get(type)||this.carIcons.get(type);
-    if(weapon){
-      const n=this.sprite(`Card ${type}`,weapon,size*.79,size*.79,this.overlayNode);n.setPosition(x,y,0);
-      n.getComponent(UITransform)!.setAnchorPoint(.5,.5);
-      if(type==='cannon'||type==='flame')n.angle=90;
-      n.getComponent(Sprite)!.color=new Color(255,255,255,242);
-      return;
+    const frame=this.weaponFrames.get(type);if(!frame)return;
+    const workshop=this.model.phase==='workshop'&&!this.atlas&&size>=80;
+    if(workshop&&this.hullFrame){
+      const h=size*1.05,hull=this.sprite('Workshop sunlight carriage',this.hullFrame,h*this.hullFrame.rect.width/this.hullFrame.rect.height,h,this.overlayNode);
+      hull.setPosition(x,y,0);hull.getComponent(Sprite)!.customMaterial=this.unitMaterial;
     }
-    this.drawCarModule(this.overlay,type,x,y,size/125,Math.PI/2);
+    const h=type==='fan'?size*.7:size*.94;
+    const n=this.sprite('Sunlight module '+type,frame,h*frame.rect.width/frame.rect.height,h,this.overlayNode);
+    n.setPosition(x,y,0);n.getComponent(UITransform)!.setAnchorPoint(.5,.5);n.getComponent(Sprite)!.customMaterial=this.unitMaterial;
   }
 
   /** A readable hand-drawn fallback while an optional modifier atlas loads. */
   private drawModIcon(type:ModId|'repair',x:number,y:number,size:number) {
     const accent=(type==='repair'||type==='repairkit')?C.teal:
       type==='fuel'?'#F08B50':type==='coolant'?'#9DDBEA':type==='voltage'||type==='surge'||type==='capacitor'?C.teal:
-      type==='acidpotency'?'#C7D98B':type==='prismfocus'?'#E3B5E2':type==='lanes'||type==='railpower'?'#C8D4DE':C.gold;
+      type==='acidpotency'?'#C7D98B':type==='prismfocus'?'#F4DB9F':type==='lanes'||type==='railpower'?'#C8D4DE':C.gold;
     const r=size*.43;this.paintRect(this.overlay,x-r,y-r,r*2,r*2,'#1C2633B8');
     const g=this.overlay;g.strokeColor=new Color(accent+'AA');g.lineWidth=Math.max(1.4,size*.018);g.circle(x,y,r*.84);g.stroke();
     const s=size/100;
@@ -1283,24 +1651,36 @@ export class Game extends Component {
     }
   }
   private drawPanel() {
+    for(const p of this.workshopPositions.values())p.nodes=[];
+    if(this.model.phase!=='workshop')this.workshopPositions.clear();
     for(const n of this.overlayNode.children.slice())n.destroy();
     this.overlay.clear();this.hitAreas=[];
     const m=this.model,g=this.overlay;
-    if(this.menuArt)this.menuArt.active=m.phase==='menu'&&!this.atlas;
+    if(this.lastLightPanel){this.lastLightPanel.active=m.phase!=='combat'&&(m.phase!=='menu'||this.atlas||this.garageOpen);this.lastLightPanel.getComponent(Sprite)!.customMaterial=this.chassisMaterial;}
+    if(this.menuArt)this.menuArt.active=m.phase==='menu'&&!this.atlas&&!this.garageOpen;
     if(this.paperArt)this.paperArt.active=false;
+    if(this.workshopArt)this.workshopArt.active=false;
+    if(this.stationArt)this.stationArt.active=false;
     if(m.phase==='combat'){
-      this.hitAreas.push({x:222,y:-483,w:197,h:64,action:()=>this.openWorkshop()});
+      this.hitAreas.push({x:0,y:-511,w:390,h:70,action:()=>this.openWorkshop()});
       return;
     }
     renderPanel({model:m,knownRecipes:this.knownRecipes,newRecipes:this.newRecipes,
+      garageOpen:this.garageOpen,garage:this.garage,
       atlas:this.atlas,atlasPage:this.atlasPage,atlasCars:this.atlasCars,selectedSlot:this.selectedSlot,
-      replacementConfirmed:this.replacementConfirmed,
+      replacementConfirmed:this.replacementConfirmed,assembling:this.assemblyRemaining>0,
       draw:{
-        rect:(x,y,w,h,color,radius)=>this.rect(g,x,y,w,h,color,radius),
-        label:(text,x,y,size,color,width,align,font)=>{this.label(this.overlayNode,text,x,y,size,color,width,align,font);},
-        art:(name)=>{if(name==='paper'){if(this.paperArt)this.paperArt.active=true;}else if(this.menuArt)this.menuArt.active=true;},
+        rect:(x,y,w,h,color,radius)=>{if(w>=610&&h>=700&&this.lastLightPanel)return;this.rect(g,x,y,w,h,color,radius);},
+        label:(text,x,y,size,color,width,align,font)=>{if(text==='末日列车'&&this.lastLightUi[0]){const n=this.sprite('Calligraphic title',this.lastLightUi[0],450,183,this.overlayNode);n.setPosition(x,y,0);n.getComponent(Sprite)!.customMaterial=this.chassisMaterial;}else this.label(this.overlayNode,text,x,y,size,color,width,align,font);},
+        art:(name)=>{if(name==='workshop'){if(this.workshopArt)this.workshopArt.active=true;else if(this.paperArt)this.paperArt.active=true;}else if(name==='station'){if(this.stationArt)this.stationArt.active=true;else if(this.paperArt)this.paperArt.active=true;}else if(name==='paper'){if(this.paperArt)this.paperArt.active=true;}else if(this.menuArt)this.menuArt.active=true;},
         button:(text,x,y,w,h,action,accent)=>this.button(text,x,y,w,h,action,accent),
         cardIcon:(type,x,y,size)=>this.cardIcon(type,x,y,size),
+        carriage:(type,x,y,size,key)=>this.workshopCar(type,x,y,size,key),
+        engineIcon:(id,x,y,size)=>{
+          const frame=this.engineFrames.get(id);
+          if(frame){const n=this.sprite(ENGINES[id].name,frame,size*.72,size,this.overlayNode);n.setPosition(x,y,0);}
+          else this.cardIcon(ENGINES[id].starter,x,y,size);
+        },
         modIcon:(type,x,y,size)=>{
           const frame=this.modFrames.get(type);
           if(frame){
@@ -1315,6 +1695,10 @@ export class Game extends Component {
         addHitArea:(x,y,w,h,action)=>{this.hitAreas.push({x,y,w,h,action});}
       },actions:{
         begin:()=>this.begin(),selectSlot:i=>this.slotClick(i),
+        openGarage:()=>{this.finishRun();this.garageOpen=true;this.atlas=false;},
+        closeGarage:()=>{this.garageOpen=false;},
+        chooseEngine:id=>{this.garage=selectGarageLoadout(this.garage,{...this.garage.loadout,engine:id});this.saveGarage();},
+        chooseModule:id=>{this.garage=selectGarageLoadout(this.garage,{...this.garage.loadout,module:id});this.saveGarage();},
         openWorkshop:()=>this.openWorkshop(),
         setAtlas:(open,page,cars)=>{this.replacementConfirmed=false;this.atlas=open;this.atlasPage=page;if(cars!==undefined)this.atlasCars=cars;},
         manualPlacement:()=>{this.selectedSlot=-1;this.replacementConfirmed=false;},
@@ -1322,16 +1706,28 @@ export class Game extends Component {
         cancelReplacement:()=>{this.replacementConfirmed=false;},
         installPending:depart=>{
           if(m.slots.every(Boolean)&&!this.replacementConfirmed)return;
-          if(m.install(this.selectedSlot)){this.selectedSlot=-1;this.replacementConfirmed=false;if(depart)m.resumeWorkshop();}
+          const index=this.selectedSlot;
+          if(m.install(index)){
+            const pending=this.workshopPositions.get('pending');
+            if(pending){this.workshopPositions.set(`car:${m.slots[index]!.id}`,pending);this.workshopPositions.delete('pending');}
+            this.selectedSlot=-1;this.replacementConfirmed=false;
+            this.assemblyRemaining=this.lowMotion?.16:.65;this.assemblyDepart=!!depart;this.tone(430,.10,'triangle');
+          }
         },
         mergePending:()=>{if(m.mergePending(this.selectedSlot)){this.selectedSlot=-1;this.toast('同车合并 · 强化升级');}},
         chooseOffer:i=>{this.selectedSlot=-1;this.replacementConfirmed=false;this.atlas=false;
           if(m.chooseOffer(i)&&m.pendingCar)this.selectedSlot=recommendSlot(m,m.pendingCar);},
         discardOffer:()=>{m.discardOffer();this.selectedSlot=-1;},
         resumeWorkshop:()=>{this.selectedSlot=-1;m.resumeWorkshop();},
-        resume:()=>m.resume(),backToMenu:()=>{m.phase='menu';this.atlas=false;}
+        resume:()=>m.resume(),backToMenu:()=>{this.finishRun();m.phase='menu';this.atlas=false;this.garageOpen=false;}
       }
     });
+    if(m.phase==='menu'&&!this.atlas&&!this.garageOpen){
+      const frame=this.engineFrames.get(this.garage.loadout.engine);
+      if(frame){const n=this.sprite('Departure sunlight engine',frame,350*frame.rect.width/frame.rect.height,350,this.overlayNode);n.setPosition(90,85,0);n.getComponent(Sprite)!.customMaterial=this.unitMaterial;}
+      if(this.hullFrame){const n=this.sprite('Departure carriage',this.hullFrame,85,125,this.overlayNode);n.setPosition(90,-159,0);n.getComponent(Sprite)!.customMaterial=this.unitMaterial;}
+      const prism=this.weaponFrames.get('prism');if(prism){const n=this.sprite('Departure light crystal',prism,110*prism.rect.width/prism.rect.height,110,this.overlayNode);n.setPosition(90,-159,0);n.getComponent(Sprite)!.customMaterial=this.unitMaterial;}
+    }
     if(m.phase==='win'||m.phase==='lose')try{
       globalThis.localStorage?.setItem('doomsday-last-run',JSON.stringify({version:'0.5.1',wave:m.wave,seed:m.initialSeed,
         slots:m.slots.map(c=>c?{type:c.type,level:c.level}:null),links:m.links.map(l=>l.recipe.id),

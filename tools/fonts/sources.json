@@ -1,0 +1,23 @@
+{
+  "title": {
+    "upstream": "Ma Shan Zheng",
+    "file": "MaShanZheng-Regular.ttf",
+    "url": "https://raw.githubusercontent.com/google/fonts/406197b91ff39a93061c2c2eeaee67ddf2ae1f0d/ofl/mashanzheng/MaShanZheng-Regular.ttf",
+    "sha256": "6d2546bb189c732a8ca29af9e22457b152387d158aa459e4ac2ce1e51788b7fb",
+    "license": "MaShanZheng-OFL.txt"
+  },
+  "body": {
+    "upstream": "LXGW WenKai",
+    "file": "LXGWWenKai-Regular.ttf",
+    "url": "https://raw.githubusercontent.com/lxgw/LxgwWenKai/e8b5b48b79f19f29aa68b0a178eab3472ea9f7e8/fonts/TTF/LXGWWenKai-Regular.ttf",
+    "sha256": "39ad71264b588165b469e35e6afb162a378dacd1f95348160240ba9038ac3009",
+    "license": "LXGWWenKai-OFL.txt"
+  },
+  "digits": {
+    "upstream": "Permanent Marker",
+    "file": "PermanentMarker-Regular.ttf",
+    "url": "https://raw.githubusercontent.com/google/fonts/3b093c4be99bbc9cc5384441270a05eaac52cd39/apache/permanentmarker/PermanentMarker-Regular.ttf",
+    "sha256": "28f82c8a7943cb8e9d599f8554da1d4fc75dbcf69b9885ad6c0611d20c6946c5",
+    "license": "PermanentMarker-LICENSE.txt"
+  }
+}

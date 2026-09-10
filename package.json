@@ -4,7 +4,7 @@
   "creator": {
     "version": "3.8.8"
   },
-  "version": "0.6.0",
+  "version": "0.7.0",
   "private": true,
   "description": "Endless five-slot train builder with adjacent support, weapon mutations and hand-painted twilight artwork",
   "scripts": {
@@ -12,7 +12,12 @@
     "prepare:site": "node tools/prepare-site.mjs",
     "serve": "node tools/serve.mjs",
     "test": "node --experimental-strip-types tests/combat.test.mjs",
+    "test:all": "node tools/run-tests.mjs",
+    "test:builds": "node --experimental-strip-types tests/build-progression.test.mjs && node --experimental-strip-types tests/build-power.test.mjs",
+    "test:damage": "node --experimental-strip-types tests/damage-numbers.test.mjs",
     "test:panels": "node --experimental-strip-types tests/panels.test.mjs",
+    "test:stations": "node --experimental-strip-types tests/stations.test.mjs",
+    "test:opening": "node --experimental-strip-types tests/opening-feedback.test.mjs && node --experimental-strip-types tests/station-advice.test.mjs",
     "typecheck": "powershell -ExecutionPolicy Bypass -File tools/check-types.ps1"
   }
 }

@@ -1,0 +1,30 @@
+import {createRequire} from 'node:module';
+import {mkdir,writeFile} from 'node:fs/promises';
+import {fileURLToPath} from 'node:url';
+import assert from 'node:assert/strict';
+const require=createRequire(import.meta.url),{chromium}=require(process.env.PLAYWRIGHT_PATH||'playwright');
+const out=new URL('../artifacts/reward-effects/',import.meta.url);await mkdir(out,{recursive:true});
+const browser=await chromium.launch({channel:'chrome',headless:true});
+try{
+ const page=await browser.newPage({viewport:{width:470,height:836}}),errors=[];
+ page.on('pageerror',e=>errors.push(e.message));
+ await page.goto(process.argv[2]);await page.waitForFunction(()=>globalThis.__doomsday?.snapshot().art.weapons.length===10);
+ await page.evaluate(async()=>{const cc=await System.import('cc');const find=n=>n.components.find(c=>c.model&&c.weaponSound)||n.children.map(find).find(Boolean);globalThis.g=find(cc.director.getScene());});
+ await page.waitForFunction(()=>g.lastLightUi.length===4&&g.lastLightEnemyReady);
+ const shot=async name=>page.screenshot({path:fileURLToPath(new URL(name+'.png',out))});
+ await page.evaluate(()=>{g.hitAreas.find(a=>a.y===-351).action();g.model.hp=10000;g.debugSpeed=3;});
+ await page.waitForFunction(()=>g.model.phase==='supply',{},{timeout:30000});
+ const xp=await page.evaluate(()=>({reward:g.model.rewardState,offers:g.model.offers}));
+ assert.equal(xp.reward.source,'xp');assert(xp.offers.every(o=>o.kind==='car'));await shot('experience-carriages');
+ await page.evaluate(()=>{g.model.chooseOffer(0);g.model.install(1);g.model.resumeWorkshop();g.model.nextScrap=1e6;});
+ await page.waitForFunction(()=>g.model.phase==='supply',{},{timeout:30000});
+ const timer=await page.evaluate(()=>({reward:g.model.rewardState,offers:g.model.offers,time:g.model.time}));
+ assert.equal(timer.reward.source,'timer');assert(timer.offers.every(o=>o.kind==='mod'));await shot('timed-modifiers');
+ await page.evaluate(()=>{g.model.chooseOffer(0);g.model.openWorkshop();g.model.slots.fill(null);g.model.carClocks.clear();['rail','shield','cannon','cryo','repair'].forEach((type,i)=>{g.model.pendingCar=type;g.model.install(i);});g.model.resumeWorkshop();g.model.nextScrap=95;g.model.nextModifierTime=60;g.model.enemies=[];g.model.spawnClock=-1e6;g.model.spawn(true,0);Object.assign(g.model.enemies.at(-1),{x:250,y:80,hp:100000,maxHp:100000,speed:0});g.debugSpeed=1;g.lowMotion=true;g.model.chargeShield(28,1);g.toastLife=0;});
+ await page.waitForFunction(()=>g.supportEffects.some(e=>e.type==='rail-beam'));
+ await shot('rail-discharge-shield');
+ await page.evaluate(()=>{g.model.resume();g.model.damageTrain(5);});await page.waitForFunction(()=>g.supportEffects.some(e=>e.type==='shield-hit'));await shot('shield-hit');
+ await page.evaluate(()=>g.model.damageTrain(999));await page.waitForFunction(()=>g.supportEffects.some(e=>e.type==='shield-break'));await shot('shield-break');
+ await page.setViewportSize({width:390,height:844});await shot('tall-hud');
+ assert.deepEqual(errors,[]);await writeFile(new URL('receipt.json',out),JSON.stringify({xp,timer,errors,checks:['natural kill XP reward','30 second modifier reward','live rail discharge','shield hit and break','390x844 viewport']},null,2));console.log('Reward and effects browser checks passed');
+}finally{await browser.close();}

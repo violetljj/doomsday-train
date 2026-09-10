@@ -1,0 +1,20 @@
+{
+  "title": {
+    "upstream": "Ma Shan Zheng",
+    "source_sha256": "6d2546bb189c732a8ca29af9e22457b152387d158aa459e4ac2ce1e51788b7fb",
+    "subset_sha256": "3ecd59fa26b193043d55422824651819923770bd2db1664b43ac62bac7209b74",
+    "bytes": 500048,
+    "glyphs": 752,
+    "source_cjk_characters": 648,
+    "unsupported_non_cjk": "·Ⅱ→↔≥▶"
+  },
+  "body": {
+    "upstream": "LXGW WenKai",
+    "source_sha256": "39ad71264b588165b469e35e6afb162a378dacd1f95348160240ba9038ac3009",
+    "subset_sha256": "567557d9d23a7298e518fb42285f8b92db64891cf534f0aa5ddad8eabebf917a",
+    "bytes": 303160,
+    "glyphs": 759,
+    "source_cjk_characters": 648,
+    "unsupported_non_cjk": ""
+  }
+}

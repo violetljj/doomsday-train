@@ -1,0 +1,16 @@
+import assert from 'node:assert/strict';
+import {newGarage,readGarage,recordRun,selectGarageLoadout,moduleUnlocked} from '../assets/scripts/Garage.ts';
+const fresh=newGarage();assert.equal(fresh.loadout.engine,'dawn');assert.equal(fresh.loadout.module,'none');
+assert.ok(moduleUnlocked(fresh,'plating'));assert.ok(!moduleUnlocked(fresh,'capacitor'));
+assert.equal(selectGarageLoadout(fresh,{engine:'storm',module:'capacitor'}).loadout.module,'none');
+const run=recordRun(fresh,{time:82.5,wave:5,kills:123,bosses:1,recipes:['cannon-fan','rail-fan','flame-fan','bad-id','cannon-fan']});
+assert.equal(run.records.runs,1);assert.equal(run.records.recipes.length,3);
+assert.equal(run.records.bestTime,82);assert.equal(fresh.records.runs,0,'Pure save update');
+assert.ok(moduleUnlocked(run,'capacitor'));assert.ok(moduleUnlocked(run,'salvager'));
+const selected=selectGarageLoadout(run,{engine:'haven',module:'capacitor'});
+assert.deepEqual(readGarage(JSON.stringify(selected)),selected,'Selection and unlocks survive reload');
+assert.deepEqual(readGarage('{broken'),fresh);
+const corrupt=readGarage(JSON.stringify({version:1,loadout:{engine:'evil',module:'capacitor'},records:{runs:-5,recipes:['bad','cannon-fan','cannon-fan']}}));
+assert.equal(corrupt.loadout.engine,'dawn');assert.equal(corrupt.loadout.module,'none');assert.equal(corrupt.records.runs,0);assert.equal(corrupt.records.recipes.length,1);
+assert.equal(readGarage(null,['cannon-fan','rail-fan','flame-fan']).records.recipes.length,3,'Existing discovered recipes migrate');
+console.log('Garage save: records, unlocks, selection, migration, malformed data, and reload passed.');
